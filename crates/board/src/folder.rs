@@ -124,6 +124,19 @@ fn is_text(file: &str) -> bool {
         .is_some_and(|(_, ext)| ["md", "txt"].iter().any(|s| ext.eq_ignore_ascii_case(s)))
 }
 
+fn bookmark(path: &Path) -> io::Result<url::Url> {
+    let raw = read_text(path, NOTE_LIMIT as u64)?;
+    let value = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("URL="))
+        .ok_or_else(|| invalid("invalid bookmark"))?;
+    let url = url::Url::parse(value).map_err(|_| invalid("invalid bookmark URL"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+        return Err(invalid("unsupported bookmark URL"));
+    }
+    Ok(url)
+}
+
 impl Card {
     fn load(root: &Path, file: &str, position: [i32; 2]) -> io::Result<Self> {
         let mut card = Self {
@@ -172,6 +185,16 @@ impl Card {
                     }
                 }
                 format!("{}\n{count} items", self.file)
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("url"))
+            {
+                match bookmark(&path) {
+                    Ok(url) => {
+                        format!("{}\n{}", url.host_str().unwrap_or("Bookmark"), url.as_str())
+                    }
+                    Err(_) => format!("{}\nInvalid bookmark", self.file),
+                }
             } else if is_text(&self.file) {
                 use std::io::Read;
                 let mut bytes = Vec::new();
@@ -431,18 +454,7 @@ impl Board {
             .map(str::to_ascii_lowercase)
             .as_deref()
         {
-            Some("url") => {
-                let raw = read_text(&path, NOTE_LIMIT as u64)?;
-                let value = raw
-                    .lines()
-                    .find_map(|l| l.strip_prefix("URL="))
-                    .ok_or_else(|| invalid("invalid bookmark"))?;
-                let url = url::Url::parse(value).map_err(|_| invalid("invalid bookmark URL"))?;
-                if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
-                    return Err(invalid("unsupported bookmark URL"));
-                }
-                Ok(PathBuf::from(url.as_str()))
-            }
+            Some("url") => Ok(PathBuf::from(bookmark(&path)?.as_str())),
             Some("corklink") => {
                 let target = PathBuf::from(read_text(&path, NOTE_LIMIT as u64)?);
                 if !target.is_absolute() || !target.symlink_metadata()?.is_file() {

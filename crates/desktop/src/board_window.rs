@@ -962,11 +962,19 @@ impl Canvas {
                 .chars()
                 .take(96)
                 .collect::<String>();
-            let body: String = lines
+            let mut body: String = lines
                 .take(4)
                 .flat_map(|line| line.chars().chain(['\n']))
                 .take(480)
                 .collect();
+            if body.is_empty()
+                && !card.folder
+                && !images::supported(&card.file)
+                && card.text == card.file
+                && let Some(ext) = Path::new(&card.file).extension()
+            {
+                body = format!("{} file", ext.to_string_lossy().to_uppercase());
+            }
             painter.text(
                 rect.min + vec2(10.0, 21.0) * scale,
                 egui::Align2::LEFT_TOP,
