@@ -12,9 +12,9 @@ import tomllib
 
 
 def run(*cmd, env=None, timeout=900):
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            env=env, timeout=timeout, check=False)
     with log.open("ab") as stream:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=stream,
+                                env=env, timeout=timeout, check=False)
         stream.write(result.stdout)
     if result.returncode:
         raise SystemExit(f"{cmd[0]} {cmd[1]} failed ({result.returncode}). See {log}")
