@@ -13,7 +13,14 @@ $sentinel = 'Clipboard preservation check'
 $utf8 = New-Object Text.UTF8Encoding($false)
 function Open-Board { Start-Process $exe -ArgumentList @('--board', ('"{0}"' -f $board)) -PassThru }
 function Confirm-View($message) {
-    if ((Read-Host "$message Type yes to confirm").Trim() -ine 'yes') { throw 'Visual check incomplete' }
+    $question = $message
+    while ($true) {
+        $reply = (Read-Host "$question [yes/no]").Trim()
+        if ($reply -ieq 'yes') { break }
+        if ($reply -ieq 'no') { throw "Reported failure: $question" }
+        Write-Host "Observation: $reply"
+        $question = 'Did this check pass, including responsiveness? Enter no to stop and retain your board.'
+    }
     if ($app.HasExited) { throw 'Board exited unexpectedly' }
 }
 function Close-Board {
@@ -41,7 +48,7 @@ try {
     Check-Notes
     $names = @(Card-Names)
     Set-Clipboard -Value $sentinel
-    Confirm-View 'Single-click the first card body. Did the copied stamp appear? Wait a moment and paste into Notepad. Did all three lines appear?'
+    Confirm-View 'Single-click the first card body. Did the card briefly outline itself and the board remain responsive on this first copy? Paste into Notepad. Did all three lines appear?'
     Check-Clipboard $payload
     Set-Clipboard -Value $sentinel
     Confirm-View "Double-click the first card body. Did your associated editor open $($names[0]) with the expected text? Leave the editor open."

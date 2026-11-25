@@ -8,7 +8,14 @@ foreach ($dir in $board,$files) { $null = [IO.Directory]::CreateDirectory($dir) 
 $previous = @{}
 $app = $null
 function Confirm-Step($prompt) {
-    if ((Read-Host "$prompt Type yes when verified").Trim() -ine 'yes') { throw "Incomplete step: $prompt" }
+    $question = $prompt
+    while ($true) {
+        $reply = (Read-Host "$question [yes/no]").Trim()
+        if ($reply -ieq 'yes') { break }
+        if ($reply -ieq 'no') { throw "Reported failure: $question" }
+        Write-Host "Observation: $reply"
+        $question = 'Did this check pass, including responsiveness? Enter no to stop and retain your board.'
+    }
     if ($app -and $app.HasExited) { throw 'The main board closed during the check' }
 }
 function Quit-Board {
@@ -38,7 +45,7 @@ try {
     $utf8 = New-Object Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($note,"Witness`nStatement one.",$utf8)
     $app = Start-Process $exe -PassThru
-    Confirm-Step "On first launch choose Browse, cancel, then browse again and select $board. Stage files in Inbox. Clear the temporary tutorial, open the upper-right Inbox and pin Witness. Is the note on the board?"
+    Confirm-Step "On first launch continue past the tutorial to folder setup. Choose Browse, cancel, then browse again and select $board. Stage files in Inbox. Open the upper-right Inbox and pin Witness. Is the note on the board?"
     $manifest = Join-Path $board '.board.toml'
     if ([IO.File]::ReadAllText($manifest) -notmatch 'file = "Witness.md"') { throw 'Inbox pin missing' }
     [IO.File]::WriteAllText($note,"Witness`nStatement revised.",$utf8)

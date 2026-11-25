@@ -148,6 +148,8 @@ fn board_window(path: Option<std::ffi::OsString>, mode: Option<bool>, panel: boo
     let app = std::rc::Rc::new(std::cell::RefCell::new(app));
     #[cfg(target_os = "linux")]
     let mut wayland_events = None;
+    // Linux can recreate the surface when switching between desktop and standard roles.
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::never_loop))]
     loop {
         #[cfg(target_os = "linux")]
         if app.borrow().machine.desktop && std::env::var_os("WAYLAND_DISPLAY").is_some() {

@@ -7,6 +7,10 @@ type CachedPreview = (Option<(SystemTime, u64)>, Option<egui::TextureHandle>);
 #[derive(Default)]
 pub(super) struct Images {
     clipboard: Option<arboard::Clipboard>,
+    #[cfg(windows)]
+    writer: Option<std::sync::mpsc::Sender<(String, CopyPayload)>>,
+    #[cfg(windows)]
+    completed: Option<std::sync::mpsc::Receiver<io::Result<String>>>,
     previews: HashMap<String, CachedPreview>,
 }
 
@@ -127,4 +131,54 @@ pub(super) fn thumbnail(ctx: &egui::Context, path: &Path) -> Option<egui::Textur
         small.as_raw(),
     );
     Some(ctx.load_texture("list preview", pixels, egui::TextureOptions::LINEAR))
+}
+
+#[cfg(windows)]
+pub(super) enum CopyPayload {
+    Text(String),
+    Image(PathBuf),
+}
+
+#[cfg(windows)]
+impl Images {
+    pub(super) fn enqueue_copy(
+        &mut self,
+        file: String,
+        payload: CopyPayload,
+        ctx: &egui::Context,
+    ) -> io::Result<()> {
+        if self.writer.is_none() {
+            let (send, requests) = std::sync::mpsc::channel::<(String, CopyPayload)>();
+            let (done, completed) = std::sync::mpsc::channel();
+            let wake = ctx.clone();
+            std::thread::Builder::new()
+                .name("clipboard-writer".into())
+                .spawn(move || {
+                    let mut clipboard = Images::default();
+                    for (name, payload) in requests {
+                        let result = match payload {
+                            CopyPayload::Text(text) => clipboard
+                                .clipboard()
+                                .and_then(|c| c.set_text(text).map_err(io::Error::other)),
+                            CopyPayload::Image(path) => clipboard.copy(&path),
+                        };
+                        if done.send(result.map(|()| name)).is_err() {
+                            break;
+                        }
+                        wake.request_repaint();
+                    }
+                })?;
+            self.writer = Some(send);
+            self.completed = Some(completed);
+        }
+        self.writer
+            .as_ref()
+            .unwrap()
+            .send((file, payload))
+            .map_err(|_| io::Error::other("clipboard worker stopped"))
+    }
+
+    pub(super) fn copy_result(&self) -> Option<io::Result<String>> {
+        self.completed.as_ref()?.try_recv().ok()
+    }
 }

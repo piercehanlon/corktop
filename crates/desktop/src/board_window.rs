@@ -292,7 +292,7 @@ impl BoardWindow {
                     preferences.set("link_file_drops", link.into())?;
                 }
                 if preferences.get::<bool>("tutorial_seen")?.is_none() {
-                    preferences.set("tutorial_seen", false.into())?;
+                    preferences.set("tutorial_seen", true.into())?;
                 }
                 self.setup = Default::default();
             }
@@ -398,13 +398,44 @@ impl BoardWindow {
             && self
                 .preferences
                 .as_ref()
-                .is_some_and(|p| p.flag("true_believer_mode", true));
+                .is_some_and(|p| p.flag("true_believer_mode", false));
         let visible = !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         if self.placard.show(ctx, enabled && visible) {
             return;
         }
         if self.canvas.is_some() && self.occupied.is_none() {
             self.hud(ctx);
+        }
+        if !self.machine.desktop && !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            egui::Area::new("window-resize-grip".into())
+                .order(egui::Order::Foreground)
+                .default_size(vec2(14., 14.))
+                .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::ZERO)
+                .movable(false)
+                .show(ctx, |ui| {
+                    let (r, grip) = ui.allocate_exact_size(vec2(14., 14.), Sense::drag());
+                    ui.painter()
+                        .rect_filled(r, 2., Color32::from_black_alpha(180));
+                    for d in [5., 9.] {
+                        ui.painter().line_segment(
+                            [
+                                r.right_bottom() - vec2(d, 2.),
+                                r.right_bottom() - vec2(2., d),
+                            ],
+                            egui::Stroke::new(1.5, Color32::WHITE),
+                        );
+                    }
+                    if grip
+                        .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
+                        .on_hover_text("Drag to resize")
+                        .is_pointer_button_down_on()
+                        && ui.input(|i| i.pointer.primary_pressed())
+                    {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
+                            egui::ResizeDirection::SouthEast,
+                        ));
+                    }
+                });
         }
         if !self.error.is_empty() {
             egui::TopBottomPanel::bottom("board-error").show(ctx, |ui| {
@@ -419,7 +450,7 @@ impl BoardWindow {
         if self.tutorial
             && self.canvas.is_some()
             && self.occupied.is_none()
-            && onboarding::tutorial(ctx, &self.materials.style)
+            && onboarding::tutorial(ctx, &self.materials.style, "Close tutorial")
             && let Some(p) = &mut self.preferences
         {
             match p.set("tutorial_seen", true.into()) {
@@ -445,7 +476,7 @@ impl BoardWindow {
                 .vscroll(true)
                 .open(&mut show)
                 .show(ctx, |ui| {
-                    ui.collapsing("Gestures and keys", |ui| {
+                    ui.collapsing("Help", |ui| {
                         for instruction in [
                             "Click a card to copy. Double-click to open its file.",
                             "Double-click empty board space to write. Ctrl+Enter saves.",
@@ -520,7 +551,7 @@ impl BoardWindow {
                                 Err(e) => self.error = e.to_string(),
                             }
                         }
-                        let mut enabled = prefs.flag("true_believer_mode", true);
+                        let mut enabled = prefs.flag("true_believer_mode", false);
                         if ui
                             .checkbox(&mut enabled, "True Believer Mode")
                             .on_hover_text("Maintains signal alignment.")
@@ -558,7 +589,11 @@ impl BoardWindow {
                             self.error = e.to_string();
                         }
                         for (key, label) in [
-                            ("display_only_titles", "Display-only titles"),
+                            (
+                                "display_only_titles",
+                                "Keep the filename when editing a card title",
+                            ),
+                            ("auto_hide_controls", "Auto-hide board controls"),
                             ("link_file_drops", "Link dropped files by default"),
                         ] {
                             let mut value = prefs.flag(key, false);
@@ -899,7 +934,10 @@ impl Canvas {
                 let edit_rect =
                     Rect::from_min_size(rect.right_bottom() - vec2(44.0, 23.0), vec2(42.0, 21.0));
                 if ui
-                    .put(edit_rect, egui::Button::new("Edit").frame(false))
+                    .put(
+                        edit_rect,
+                        egui::Button::new("Edit").fill(Color32::from_gray(42)),
+                    )
                     .on_hover_text("Card options")
                     .clicked()
                 {
@@ -922,7 +960,7 @@ impl Canvas {
                 let button =
                     Rect::from_min_size(rect.right_top() + vec2(-24.0, 2.0), vec2(22.0, 22.0));
                 if ui
-                    .put(button, egui::Button::new("×").frame(false))
+                    .put(button, egui::Button::new("×").fill(Color32::from_gray(42)))
                     .on_hover_text(if card.missing {
                         "Dismiss missing card"
                     } else {
@@ -1234,25 +1272,48 @@ impl Canvas {
             && !ui.input(|i| i.pointer.primary_down())
         {
             self.pending_copy = None;
-            if images::supported(&self.board.cards()[idx].file) {
-                self.images.copy(&self.board.note_path(idx)?)?;
-            } else {
-                ui.ctx().copy_text(self.board.note_text(idx)?);
+            #[cfg(windows)]
+            {
+                let card = &self.board.cards()[idx];
+                let payload = if images::supported(&card.file) {
+                    images::CopyPayload::Image(self.board.note_path(idx)?)
+                } else {
+                    images::CopyPayload::Text(self.board.note_text(idx)?)
+                };
+                self.images
+                    .enqueue_copy(card.file.clone(), payload, ui.ctx())?;
             }
-            self.copied = Some((idx, now + 0.65));
+            #[cfg(not(windows))]
+            {
+                if images::supported(&self.board.cards()[idx].file) {
+                    self.images.copy(&self.board.note_path(idx)?)?;
+                } else {
+                    ui.ctx().copy_text(self.board.note_text(idx)?);
+                }
+                self.copied = Some((idx, now + 0.45));
+            }
+        }
+        #[cfg(windows)]
+        while let Some(result) = self.images.copy_result() {
+            let file = result?;
+            self.copied = self
+                .board
+                .cards()
+                .iter()
+                .position(|c| c.file == file)
+                .map(|idx| (idx, now + 0.45));
         }
         if let Some((idx, until)) = self.copied
             && idx < cards.len()
             && now < until
         {
-            ui.ctx()
-                .request_repaint_after(Duration::from_secs_f64(until - now));
-            ui.painter().text(
-                cards[idx].right_bottom() - vec2(8.0, 5.0),
-                egui::Align2::RIGHT_BOTTOM,
-                "copied",
-                egui::FontId::proportional(13.0),
-                Color32::DARK_GREEN,
+            let alpha = ((until - now) / 0.45 * 175.).clamp(0., 175.) as u8;
+            ui.ctx().request_repaint_after(Duration::from_millis(24));
+            ui.painter().rect_stroke(
+                cards[idx].shrink(2.),
+                4.,
+                egui::Stroke::new(2., Color32::from_black_alpha(alpha)),
+                egui::StrokeKind::Inside,
             );
         }
         Ok(())

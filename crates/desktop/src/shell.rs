@@ -24,6 +24,7 @@ pub struct MachineState {
     pub position: Option<[f32; 2]>,
     pub desktop: bool,
     pub start_with_os: bool,
+    pub introduction_seen: bool,
 }
 
 pub fn state_directory() -> io::Result<PathBuf> {
