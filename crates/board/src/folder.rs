@@ -1,3 +1,4 @@
+mod pack;
 mod recycle;
 mod spatial;
 use super::{MANIFEST, MANIFEST_VERSION, nofollow_options, read_manifest, read_text, save};
@@ -93,7 +94,10 @@ fn load_strings(manifest: &Table, cards: &[Card]) -> io::Result<Vec<[usize; 2]>>
     for entry in entries {
         let pair = entry
             .as_array()
-            .filter(|p| p.len() == 2)
+            .filter(|p| {
+                p.len() == 2
+                    || (p.len() == 3 && p[2].as_integer().is_some_and(|v| (0..6).contains(&v)))
+            })
             .ok_or_else(|| invalid("invalid string endpoints"))?;
         let endpoint = |v: &Value| {
             cards
@@ -440,24 +444,25 @@ impl Board {
         &self.strings
     }
 
-    fn save_strings(&mut self, strings: Vec<[usize; 2]>) -> io::Result<()> {
-        self.check_manifest()?;
-        let mut updated = self.manifest.clone();
-        let entries = strings
-            .iter()
-            .map(|pair| {
-                Value::Array(
-                    pair.iter()
-                        .map(|&i| Value::String(self.cards[i].file.clone()))
-                        .collect(),
-                )
-            })
-            .collect();
-        updated.insert("strings".into(), Value::Array(entries));
-        self.commit_layout(updated)
+    pub fn thread_color(&self, index: usize) -> usize {
+        self.manifest
+            .get("strings")
+            .and_then(Value::as_array)
+            .and_then(|v| v.get(index))
+            .and_then(Value::as_array)
+            .and_then(|p| p.get(2))
+            .and_then(Value::as_integer)
+            .unwrap_or(0) as usize
     }
 
     pub fn connect(&mut self, a: usize, b: usize) -> io::Result<()> {
+        self.connect_colored(a, b, 0)
+    }
+
+    pub fn connect_colored(&mut self, a: usize, b: usize, color: u8) -> io::Result<()> {
+        if color >= 6 {
+            return Err(invalid("invalid thread color"));
+        }
         if a == b || a >= self.cards.len() || b >= self.cards.len() {
             return Err(invalid("choose two different cards"));
         }
@@ -465,9 +470,19 @@ impl Board {
         if self.strings.contains(&pair) {
             return Ok(());
         }
-        let mut strings = self.strings.clone();
-        strings.push(pair);
-        self.save_strings(strings)
+        let mut next = self.manifest.clone();
+        let mut ends = pair
+            .map(|i| Value::String(self.cards[i].file.clone()))
+            .to_vec();
+        if color != 0 {
+            ends.push(i64::from(color).into());
+        }
+        next.entry("strings")
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .unwrap()
+            .push(Value::Array(ends));
+        self.commit_layout(next)
     }
 
     pub fn cut(&mut self, a: usize, b: usize) -> io::Result<()> {
@@ -475,9 +490,9 @@ impl Board {
         let Some(index) = self.strings.iter().position(|ends| ends == &pair) else {
             return Ok(());
         };
-        let mut strings = self.strings.clone();
-        strings.remove(index);
-        self.save_strings(strings)
+        let mut next = self.manifest.clone();
+        next["strings"].as_array_mut().unwrap().remove(index);
+        self.commit_layout(next)
     }
 
     fn check_manifest(&self) -> io::Result<()> {

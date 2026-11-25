@@ -93,7 +93,9 @@ impl Images {
                 .insert(card.file.clone(), (card.revision(), texture));
         }
         if let Some((_, Some(t))) = self.previews.get(&card.file) {
-            let target = Rect::from_min_size(rect.min + vec2(10.0, 48.0), t.size_vec2());
+            let scale = rect.width() / CARD_SIZE.x;
+            let target =
+                Rect::from_min_size(rect.min + vec2(10.0, 48.0) * scale, t.size_vec2() * scale);
             ui.painter().image(
                 t.id(),
                 target,

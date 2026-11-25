@@ -30,6 +30,7 @@ impl Spatial {
         board: &mut Board,
         ui: &mut egui::Ui,
         origin: Pos2,
+        scale: f32,
         background: &egui::Response,
     ) -> std::io::Result<()> {
         let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -38,26 +39,22 @@ impl Spatial {
             && background.clicked()
             && let Some(p) = pointer
         {
-            board.add_pin(logical(p - origin))?;
+            board.add_pin(logical(
+                ((p - origin) / scale).min(offset(board.canvas_size()) - vec2(6.0, 6.0)),
+            ))?;
             self.placing = false;
         }
         let geometry = board.geometry();
-        let points: Vec<_> = geometry.pins.iter().map(|p| origin + offset(*p)).collect();
-        for d in &geometry.dividers {
-            let [a, b] = d.pins.map(|i| points[i]);
-            ui.painter().line_segment(
-                [a + vec2(0.0, 3.0), b + vec2(0.0, 3.0)],
-                egui::Stroke::new(3.0, Color32::from_black_alpha(75)),
-            );
-            ui.painter().line_segment(
-                [a, b],
-                egui::Stroke::new(2.5, THREADS[usize::from(d.color)]),
-            );
-        }
+        let points: Vec<_> = geometry
+            .pins
+            .iter()
+            .map(|p| origin + offset(*p) * scale)
+            .collect();
+        let mut pack_zone = None;
         let mut moved_zone = None;
         let mut format_zone = None;
         for (i, z) in geometry.zones.iter().enumerate() {
-            let center = origin + offset(geometry.center(i));
+            let center = origin + offset(geometry.center(i)) * scale;
             let label = ui.painter().text(
                 center,
                 egui::Align2::CENTER_CENTER,
@@ -65,8 +62,16 @@ impl Spatial {
                 egui::FontId::proportional(18.0),
                 Color32::WHITE,
             );
-            let response = ui.interact(label.expand(4.0), ui.id().with(("zone", i)), Sense::drag());
+            let response = ui.interact(
+                label.expand(4.0),
+                ui.id().with(("zone", i)),
+                Sense::click_and_drag(),
+            );
             response.context_menu(|ui| {
+                if ui.button("Pack into folder").clicked() {
+                    pack_zone = Some(i);
+                    ui.close();
+                }
                 for mode in [
                     "Grid / Rows",
                     "Circle / Ring",
@@ -87,11 +92,17 @@ impl Spatial {
                         .map(|(a, b)| a - b)
                 })
             {
-                moved_zone = Some((i, [delta.x.round() as i32, delta.y.round() as i32]));
+                moved_zone = Some((
+                    i,
+                    [
+                        (delta.x / scale).round() as i32,
+                        (delta.y / scale).round() as i32,
+                    ],
+                ));
             }
         }
         for (id, &p) in points.iter().enumerate() {
-            let r = ui.interact(
+            ui.interact(
                 Rect::from_center_size(p, vec2(22.0, 22.0)),
                 ui.id().with(("bare-tack", id)),
                 Sense::drag(),
@@ -100,7 +111,10 @@ impl Spatial {
                 .circle_filled(p, 6.0, Color32::from_rgb(151, 106, 52));
             ui.painter()
                 .circle_filled(p - vec2(1.2, 1.2), 2.3, Color32::from_rgb(239, 197, 119));
-            if r.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
+            if ui.ui_contains_pointer()
+                && pointer.is_some_and(|at| at.distance(p) <= 11.0)
+                && ui.input(|i| i.pointer.primary_pressed())
+            {
                 self.drag = Some(PinDrag {
                     id,
                     start: now,
@@ -110,6 +124,11 @@ impl Spatial {
                 });
                 ui.ctx().request_repaint_after(Duration::from_millis(200));
             }
+        }
+        if let Some(index) = pack_zone {
+            board.pack_zone(index)?;
+            ui.ctx().request_repaint();
+            return Ok(());
         }
         if let Some((zone, mode)) = format_zone {
             board.format_zone(zone, mode)?;
@@ -138,11 +157,26 @@ impl Spatial {
             }
             if ui.input(|i| i.pointer.primary_released()) {
                 let drag = self.drag.take().unwrap();
-                let pos = logical(p - origin);
+                let pos = logical(
+                    ((p - origin) / scale).min(offset(board.canvas_size()) - vec2(6.0, 6.0)),
+                );
                 if drag.moving {
                     board.move_pin(drag.id, pos)?;
                 } else if pulling && p.distance(drag.origin) > 10.0 {
                     let end = points.iter().position(|to| p.distance(*to) <= 12.0);
+                    if end.is_none()
+                        && let Some(card) = board.cards().iter().rposition(|c| {
+                            Rect::from_min_size(
+                                origin + offset(c.position) * scale,
+                                CARD_SIZE * scale,
+                            )
+                            .contains(p)
+                        })
+                    {
+                        board.anchor_card(card, Some(drag.id), pos, drag.color as u8)?;
+                        ui.ctx().request_repaint();
+                        return Ok(());
+                    }
                     let loop_pins = end.and_then(|end| path_between(board, drag.id, end));
                     board.tie_divider(drag.id, end, pos, drag.color as u8)?;
                     if let Some(pins) = loop_pins {

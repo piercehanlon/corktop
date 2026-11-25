@@ -9,6 +9,14 @@ pub struct Geometry {
     pub pins: Vec<Point>,
     pub dividers: Vec<Divider>,
     pub zones: Vec<Zone>,
+    pub anchors: Vec<Anchor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Anchor {
+    pub file: String,
+    pub pin: usize,
+    pub color: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,6 +54,14 @@ impl Geometry {
             {
                 return Err(invalid("invalid divider"));
             }
+        }
+        if self.anchors.len() > 4096
+            || self
+                .anchors
+                .iter()
+                .any(|a| !valid_name(&a.file) || a.pin >= self.pins.len() || a.color >= 6)
+        {
+            return Err(invalid("invalid anchored string"));
         }
         for z in &self.zones {
             if z.title.trim().is_empty()
@@ -89,6 +105,52 @@ impl Geometry {
 }
 
 impl Board {
+    pub fn canvas_size(&self) -> Point {
+        if let Some(size) = self.manifest.get("canvas_size").and_then(Value::as_array)
+            && let [w, h] = size.as_slice()
+            && let (Some(w), Some(h)) = (w.as_integer(), h.as_integer())
+        {
+            return [
+                w.clamp(220, 1_000_220) as i32,
+                h.clamp(112, 1_000_112) as i32,
+            ];
+        }
+        self.cards
+            .iter()
+            .map(|c| [c.position[0] + 220, c.position[1] + 112])
+            .chain(self.geometry.pins.iter().map(|p| [p[0] + 12, p[1] + 12]))
+            .fold([764, 499], |a, b| [a[0].max(b[0]), a[1].max(b[1])])
+    }
+
+    pub fn refit(&mut self, viewport: Point) -> io::Result<()> {
+        let size = [
+            viewport[0].clamp(220, 1_000_220),
+            viewport[1].clamp(112, 1_000_112),
+        ];
+        let mut next = self.manifest.clone();
+        next.insert(
+            "canvas_size".into(),
+            Value::Array(size.map(Value::from).to_vec()),
+        );
+        if let Some(cards) = next.get_mut("cards").and_then(Value::as_array_mut) {
+            for (entry, card) in cards.iter_mut().zip(&self.cards) {
+                entry["x"] = card.position[0].min(size[0] - 220).into();
+                entry["y"] = card.position[1].min(size[1] - 112).into();
+            }
+        }
+        let mut g = self.geometry.clone();
+        for p in &mut g.pins {
+            for a in 0..2 {
+                p[a] = p[a].clamp(6, size[a] - 6);
+            }
+        }
+        next.insert(
+            "geometry".into(),
+            Value::try_from(g).map_err(io::Error::other)?,
+        );
+        self.commit_layout(next)
+    }
+
     pub fn geometry(&self) -> &Geometry {
         &self.geometry
     }
@@ -198,6 +260,59 @@ impl Board {
             Ok(())
         })?;
         Ok(target)
+    }
+
+    pub fn anchor_card(
+        &mut self,
+        card: usize,
+        pin: Option<usize>,
+        drop: Point,
+        color: u8,
+    ) -> io::Result<()> {
+        let file = self
+            .cards
+            .get(card)
+            .ok_or_else(|| invalid("unknown card"))?
+            .file
+            .clone();
+        self.edit_geometry(|g| {
+            let pin = pin.unwrap_or_else(|| {
+                g.pins.push(drop);
+                g.pins.len() - 1
+            });
+            if g.anchors.iter().any(|a| a.file == file && a.pin == pin) {
+                return Ok(());
+            }
+            g.anchors.push(Anchor { file, pin, color });
+            Ok(())
+        })
+    }
+
+    pub fn cut_divider(&mut self, index: usize) -> io::Result<()> {
+        self.edit_geometry(|g| {
+            let pins = g
+                .dividers
+                .get(index)
+                .ok_or_else(|| invalid("unknown divider"))?
+                .pins;
+            g.dividers.remove(index);
+            g.zones.retain(|z| {
+                !z.pins
+                    .iter()
+                    .zip(z.pins.iter().cycle().skip(1))
+                    .any(|(&a, &b)| [a.min(b), a.max(b)] == pins)
+            });
+            Ok(())
+        })
+    }
+    pub fn cut_anchor(&mut self, index: usize) -> io::Result<()> {
+        self.edit_geometry(|g| {
+            if index >= g.anchors.len() {
+                return Err(invalid("unknown anchored string"));
+            }
+            g.anchors.remove(index);
+            Ok(())
+        })
     }
 
     pub fn name_zone(&mut self, pins: Vec<usize>, title: String) -> io::Result<()> {
