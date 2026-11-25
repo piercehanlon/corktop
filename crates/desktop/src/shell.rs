@@ -1,3 +1,5 @@
+#[cfg(windows)]
+pub mod caption;
 pub mod control;
 pub mod login;
 pub mod picker;

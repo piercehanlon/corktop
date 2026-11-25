@@ -60,7 +60,8 @@ fn read_text(path: &Path, limit: u64) -> io::Result<String> {
     Ok(text)
 }
 
-fn read_manifest(root: &Path) -> io::Result<Table> {
+/// Read the saved manifest without acquiring the writer lock or modifying the board.
+pub fn read_manifest(root: &Path) -> io::Result<Table> {
     toml::from_str(&read_text(&root.join(MANIFEST), LIMIT)?)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid board manifest"))
 }

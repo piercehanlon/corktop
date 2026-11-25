@@ -404,6 +404,8 @@ impl eframe::App for BoardWindow {
 
 impl BoardWindow {
     pub(crate) fn draw(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        crate::shell::caption::clear();
         self.machine.observe(
             ctx,
             self.parents

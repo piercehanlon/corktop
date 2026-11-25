@@ -91,6 +91,12 @@ fn main() -> ExitCode {
             }
             println!(r#"{{"readiness":"pass"}}"#);
         }
+        (Some(flag), Some(path)) if flag == "--inspect-layout" => {
+            match corktop_board::read_manifest(std::path::Path::new(&path)) {
+                Ok(layout) => println!("{}", serde_json::json!(layout)),
+                Err(e) => return failure(&format!("could not read board layout: {e}")),
+            }
+        }
         (Some(flag), Some(path)) if flag == "--probe" => {
             if corktop_board::probe(std::path::Path::new(&path)).is_err() {
                 return failure("synthetic persistence probe failed");

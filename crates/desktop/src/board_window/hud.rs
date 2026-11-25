@@ -120,15 +120,7 @@ impl BoardWindow {
         let toggle_maximize = || {
             #[cfg(windows)]
             if canvas.window_handle != 0 {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    SW_MAXIMIZE, SW_RESTORE, ShowWindow,
-                };
-                unsafe {
-                    ShowWindow(
-                        canvas.window_handle as _,
-                        if maximized { SW_RESTORE } else { SW_MAXIMIZE },
-                    );
-                }
+                crate::shell::caption::toggle_maximize(canvas.window_handle);
                 return;
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
@@ -204,6 +196,29 @@ impl BoardWindow {
                                 canvas.spatial.placing = !canvas.spatial.placing;
                             }
                             let available = ui.available_rect_before_wrap();
+                            #[cfg(windows)]
+                            if !self.machine.desktop
+                                && !self.showing_settings
+                                && !self.show_bin
+                                && self.flat_list.is_none()
+                                && !self.tutorial
+                                && !egui::Popup::is_any_open(ctx)
+                            {
+                                let mut caption = rect;
+                                caption.max.x = available.right();
+                                if !self.parents.is_empty() {
+                                    caption.min.x = available.left() + 140.;
+                                }
+                                if !maximized {
+                                    caption.min.y += 8.;
+                                    caption.min.x = caption.min.x.max(rect.left() + 8.);
+                                }
+                                crate::shell::caption::set(
+                                    canvas.window_handle,
+                                    caption,
+                                    ctx.pixels_per_point(),
+                                );
+                            }
                             if available.width() > 8. {
                                 let title = ui.painter().with_clip_rect(available);
                                 title.text(

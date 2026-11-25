@@ -30,6 +30,10 @@ impl Spatial {
         let extent = background.rect.size() / scale;
         let pointer = ui.input(|i| i.pointer.interact_pos());
 
+        if self.relocate.is_some() {
+            self.placing = false;
+            self.drag = None;
+        }
         if self.placing
             && ui.input(|i| i.key_pressed(Key::Escape) || i.modifiers.command || i.modifiers.ctrl)
         {
@@ -187,12 +191,16 @@ impl Spatial {
             }
         }
         let mut remove_pin = None;
+        let mut released_pin = None;
         for (id, &p) in points.iter().enumerate() {
             let pin = ui.interact(
                 Rect::from_center_size(p, vec2(22.0, 22.0)),
                 ui.id().with(("bare-tack", id)),
                 Sense::click_and_drag(),
             );
+            if pin.drag_stopped_by(egui::PointerButton::Primary) {
+                released_pin = Some(id);
+            }
             pin.context_menu(|ui| {
                 if ui.button("Move tack").clicked() {
                     self.placing = false;
@@ -206,7 +214,7 @@ impl Spatial {
                 }
             });
             style.pin(ui.painter(), p);
-            if pin.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
+            if pin.drag_started_by(egui::PointerButton::Primary) {
                 self.drag = Some(PinDrag {
                     id,
                     origin: p,
@@ -272,7 +280,7 @@ impl Spatial {
             } else if drag.moving {
                 ui.painter().circle_filled(p, 6.0, Color32::LIGHT_YELLOW);
             }
-            if ui.input(|i| i.pointer.primary_released()) {
+            if released_pin == Some(drag.id) {
                 let drag = self.drag.take().unwrap();
                 let pos = logical(((p - origin) / scale).min(extent - vec2(6.0, 6.0)));
                 if drag.moving {
@@ -300,6 +308,9 @@ impl Spatial {
                 }
                 ui.ctx().request_repaint();
             }
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            self.drag = None;
         }
         if let Some((pins, title)) = &mut self.naming {
             let mut save = false;
