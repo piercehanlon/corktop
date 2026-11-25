@@ -177,6 +177,7 @@ impl BoardWindow {
         #[cfg(windows)]
         if self.hwnd != 0 {
             use windows_sys::Win32::UI::WindowsAndMessaging::*;
+            crate::shell::tray_visibility(visible);
             unsafe {
                 let window = self.hwnd as _;
                 ShowWindow(
@@ -241,6 +242,10 @@ impl BoardWindow {
                 #[cfg(not(windows))]
                 let visible =
                     !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+                #[cfg(windows)]
+                if !visible && self.layer.active {
+                    self.control_layer(false);
+                }
                 self.set_visible(ctx, !visible);
             }
             Action::ToggleLayer => {
@@ -262,13 +267,8 @@ impl BoardWindow {
             }
             Action::Quit => {
                 #[cfg(windows)]
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
-                    if IsWindowVisible(self.hwnd as _) == 0 || IsIconic(self.hwnd as _) != 0 {
-                        // eframe processes its close request during a drawable frame.
-                        ShowWindow(self.hwnd as _, SW_SHOWNOACTIVATE);
-                    }
-                }
+                crate::shell::window_controls::quit(self.hwnd);
+                #[cfg(not(windows))]
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }

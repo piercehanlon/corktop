@@ -227,6 +227,9 @@ public static class CorktopWindowProbe {
     $desktop = Read-Host 'Enable Desktop layer in Settings > Behavior. If the board stays visible, press Win+D and click a card. Enter attached if it responds, fallback if corktop reports the host is unavailable, or failed if it disappears or stops responding'
     Write-ShellState 'after desktop check'
     if ($desktop -notin 'attached','fallback','failed') { throw "Unknown desktop result: $desktop" }
+    if ($desktop -eq 'attached') {
+        Confirm-Step 'Bring another app over part of the board. Does that app stay in front and accept clicks? Show the desktop again. Can you click Witness on the board?'
+    }
     Confirm-Step 'From the corktop tray menu choose Return to standard window. Did the original board become visible and interactive?'
     Write-ShellState 'returned to standard'
     if ($desktop -eq 'failed') { throw 'Desktop attachment failed. Returning to a standard window from the tray passed.' }

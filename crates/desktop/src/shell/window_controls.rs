@@ -15,6 +15,14 @@ use windows_sys::Win32::{
 };
 
 const WAKE: u32 = WM_APP + 0x4c1;
+const QUIT: u32 = WM_APP + 0x4c3;
+
+pub fn quit(hwnd: isize) {
+    unsafe {
+        PostMessageW(hwnd as HWND, QUIT, 0, 0);
+    }
+}
+
 thread_local! {
     static RECEIVER: RefCell<Option<(Weak<RefCell<BoardWindow>>, egui::Context)>> = const { RefCell::new(None) };
 }
@@ -44,6 +52,11 @@ unsafe extern "system" fn procedure(
     _: usize,
 ) -> isize {
     unsafe {
+        if msg == QUIT {
+            // winit maps destruction of the root window to a normal eframe exit.
+            DestroyWindow(window);
+            return 0;
+        }
         if msg == WAKE {
             let receiver = RECEIVER.with_borrow(Clone::clone);
             if let Some((weak, ctx)) = receiver
