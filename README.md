@@ -13,10 +13,12 @@ Use `--identity` for build information or `--version-window` for the Pilot versi
 
 Click empty board space and press **Ctrl+V** to pin plain text. Each paste gets its own Markdown file. A single click on a saved card copies the file contents and briefly shows **copied**. Double-click the card to open its file in your default Markdown application. Hover near a strand to highlight the one that **Cut String** will remove.
 
-An occupied folder can stage its files in the **Inbox** or pin them in a grid. Drag a file from your desktop to copy it, hold Ctrl to switch between copy and link, or hold Shift to move it. Paste a URL or bitmap to pin a bookmark or PNG. Edits outside corktop refresh the card. Missing files retain their places and connections.
+An occupied folder can stage its files in the **Inbox** or pin them in a grid. Drag a file from your desktop to copy it, hold Ctrl to switch between copy and link, or hold Shift to move it. Paste a URL, a bitmap, or files copied in the file manager to pin them on the board. Edits outside corktop refresh the card. Missing files retain their places and connections. Settings can dismiss missing cards after a day or a week. The default keeps them until you dismiss them.
 
 Double-click a folder card to enter it. **Parent folder** returns to the previous board. Drop a file card onto a folder card to move its payload into that folder. Connections stay on their original board. Hover over a card for **Edit** and the recycle button. **Recycle bin** restores a deleted card and links to surviving cards. **Settings** controls whether editing a title renames the file and whether file drops default to links. These preferences travel with the selected root folder.
 
 **Pin** places a bare tack. Drag it immediately to reposition it, or hold briefly and drag to pull a string. Drop on empty cork to plant the next tack. The mouse wheel changes the thread color while pulling. Close a loop of three or more bare tacks to name a zone. Drag its label to move the enclosed cards with it. Right-click the label for grid, ring, web, stack and folder-packing actions.
 
 **Ctrl+Z** undoes an in-session layout edit. Resizing scales the board until it reaches its readable minimum, then scrolling pans to the edges. Right-click empty cork and choose **Refit to Current Frame** to save new bounds.
+
+Hold a card body, right-click it, or choose **Edit** to change its paper color, show or hide its tack, reposition it, edit its title, or open its folder. The corner controls appear as the pointer approaches. The upper-right list can search child boards and reveal a matching card. On first launch, browse for a board folder or paste its path.

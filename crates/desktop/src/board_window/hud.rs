@@ -62,6 +62,11 @@ impl BoardWindow {
         let canvas = self.canvas.as_mut().unwrap();
         if let Some(p) = &self.preferences {
             canvas.display_only = p.flag("display_only_titles", false);
+            canvas.ghost_days = p
+                .get::<u8>("ghost_retention_days")
+                .ok()
+                .flatten()
+                .unwrap_or(0);
             canvas.link_drops = p.flag("link_file_drops", false);
         }
         for (control, corner, offset) in [

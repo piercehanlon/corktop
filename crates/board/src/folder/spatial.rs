@@ -182,10 +182,15 @@ impl Board {
             if entry.get("file").and_then(Value::as_str) != Some(card.file.as_str()) {
                 return Err(invalid("card set changed"));
             }
-            positions.push([position(entry.get("x"))?, position(entry.get("y"))?]);
+            positions.push((
+                [position(entry.get("x"))?, position(entry.get("y"))?],
+                card_style(entry)?,
+            ));
         }
         save(&self.root, next)?;
-        for (card, pos) in self.cards.iter_mut().zip(positions) {
+        for (card, (pos, (tone, show_pin))) in self.cards.iter_mut().zip(positions) {
+            card.tone = tone;
+            card.show_pin = show_pin;
             card.position = pos;
         }
         self.geometry = geometry;
@@ -230,6 +235,19 @@ impl Board {
             Ok(())
         })?;
         Ok(id)
+    }
+
+    pub fn remove_pin(&mut self, id: usize) -> io::Result<()> {
+        self.edit_geometry(|g| {
+            if id >= g.pins.len() {
+                return Err(invalid("unknown pin"));
+            }
+            g.dividers.retain(|d| !d.pins.contains(&id));
+            g.zones.retain(|z| !z.pins.contains(&id));
+            g.anchors.retain(|a| a.pin != id);
+            g.retain_pins(|i| i != id);
+            Ok(())
+        })
     }
 
     pub fn move_pin(&mut self, id: usize, pos: Point) -> io::Result<()> {
@@ -479,6 +497,30 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn removing_a_tack_keeps_surviving_strings_attached_after_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("evidence", [10, 10]).unwrap();
+        let first = board.add_pin([20, 20]).unwrap();
+        let middle = board.tie_divider(first, None, [40, 20], 2).unwrap();
+        let last = board.tie_divider(middle, None, [30, 30], 3).unwrap();
+        board.tie_divider(first, Some(last), [30, 30], 4).unwrap();
+        board
+            .name_zone(vec![first, middle, last], "triangle".into())
+            .unwrap();
+        board.anchor_card(0, Some(last), [30, 30], 1).unwrap();
+        board.remove_pin(middle).unwrap();
+        drop(board);
+        let reopened = Board::open(root.path()).unwrap();
+        let geo = reopened.geometry();
+        assert_eq!(geo.pins, [[20, 20], [30, 30]]);
+        assert_eq!(geo.dividers.len(), 1);
+        assert_eq!(geo.dividers[0].pins, [0, 1]);
+        assert_eq!(geo.anchors[0].pin, 1);
+        assert!(geo.zones.is_empty());
+    }
+
     #[test]
     fn zone_move_and_undo_are_atomic_and_restore_the_persisted_layout() {
         let root = tempfile::tempdir().unwrap();

@@ -1,6 +1,6 @@
 use super::*;
 use image::{ImageEncoder, codecs::png::PngEncoder};
-use std::{collections::HashMap, io, time::SystemTime};
+use std::{collections::HashMap, io, path::PathBuf, time::SystemTime};
 
 type CachedPreview = (Option<(SystemTime, u64)>, Option<egui::TextureHandle>);
 
@@ -37,6 +37,14 @@ impl Images {
             self.clipboard = Some(arboard::Clipboard::new().map_err(io::Error::other)?);
         }
         Ok(self.clipboard.as_mut().unwrap())
+    }
+
+    pub(super) fn clipboard_files(&mut self) -> io::Result<Vec<PathBuf>> {
+        match self.clipboard()?.get().file_list() {
+            Ok(paths) => Ok(paths),
+            Err(arboard::Error::ContentNotAvailable) => Ok(Vec::new()),
+            Err(e) => Err(io::Error::other(e)),
+        }
     }
 
     pub(super) fn paste(&mut self, board: &mut Board, pos: [i32; 2]) -> io::Result<()> {

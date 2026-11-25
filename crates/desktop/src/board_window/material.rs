@@ -125,6 +125,11 @@ impl Style {
         };
         color(self.notes()[slot])
     }
+    pub fn card_paper(&self, file: &str, folder: bool, tone: Option<u8>) -> Color32 {
+        tone.and_then(|n| self.notes().get(n as usize).copied())
+            .map(color)
+            .unwrap_or_else(|| self.note(file, folder))
+    }
     pub fn title(&self, size: f32) -> egui::FontId {
         egui::FontId::new(
             size,

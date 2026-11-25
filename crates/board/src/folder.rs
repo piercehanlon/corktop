@@ -25,6 +25,8 @@ pub struct Card {
     pub file: String,
     pub text: String,
     pub title: Option<String>,
+    pub tone: Option<u8>,
+    pub show_pin: bool,
     pub missing: bool,
     pub folder: bool,
     revision: Option<(SystemTime, u64)>,
@@ -122,6 +124,19 @@ fn is_text(file: &str) -> bool {
         .is_some_and(|(_, ext)| ["md", "txt"].iter().any(|s| ext.eq_ignore_ascii_case(s)))
 }
 
+fn bookmark(path: &Path) -> io::Result<url::Url> {
+    let raw = read_text(path, NOTE_LIMIT as u64)?;
+    let value = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("URL="))
+        .ok_or_else(|| invalid("invalid bookmark"))?;
+    let url = url::Url::parse(value).map_err(|_| invalid("invalid bookmark URL"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+        return Err(invalid("unsupported bookmark URL"));
+    }
+    Ok(url)
+}
+
 impl Card {
     fn load(root: &Path, file: &str, position: [i32; 2]) -> io::Result<Self> {
         let mut card = Self {
@@ -129,6 +144,8 @@ impl Card {
             position,
             text: String::new(),
             title: None,
+            tone: None,
+            show_pin: true,
             missing: true,
             folder: false,
             revision: None,
@@ -168,6 +185,16 @@ impl Card {
                     }
                 }
                 format!("{}\n{count} items", self.file)
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("url"))
+            {
+                match bookmark(&path) {
+                    Ok(url) => {
+                        format!("{}\n{}", url.host_str().unwrap_or("Bookmark"), url.as_str())
+                    }
+                    Err(_) => format!("{}\nInvalid bookmark", self.file),
+                }
             } else if is_text(&self.file) {
                 use std::io::Read;
                 let mut bytes = Vec::new();
@@ -185,6 +212,24 @@ impl Card {
         }
         Ok(())
     }
+}
+
+fn card_style(entry: &Value) -> io::Result<(Option<u8>, bool)> {
+    let tone = entry
+        .get("tone")
+        .map(|v| {
+            v.as_integer()
+                .filter(|n| (0..4).contains(n))
+                .map(|n| n as u8)
+                .ok_or_else(|| invalid("invalid card tone"))
+        })
+        .transpose()?;
+    let show_pin = entry
+        .get("show_pin")
+        .map(|v| v.as_bool().ok_or_else(|| invalid("invalid pin setting")))
+        .transpose()?
+        .unwrap_or(true);
+    Ok((tone, show_pin))
 }
 
 fn load_cards(root: &Path, manifest: &Table) -> io::Result<Vec<Card>> {
@@ -213,6 +258,7 @@ fn load_cards(root: &Path, manifest: &Table) -> io::Result<Vec<Card>> {
                 file,
                 [position(entry.get("x"))?, position(entry.get("y"))?],
             )?;
+            (card.tone, card.show_pin) = card_style(entry)?;
             card.title = entry
                 .get("title")
                 .and_then(Value::as_str)
@@ -408,18 +454,7 @@ impl Board {
             .map(str::to_ascii_lowercase)
             .as_deref()
         {
-            Some("url") => {
-                let raw = read_text(&path, NOTE_LIMIT as u64)?;
-                let value = raw
-                    .lines()
-                    .find_map(|l| l.strip_prefix("URL="))
-                    .ok_or_else(|| invalid("invalid bookmark"))?;
-                let url = url::Url::parse(value).map_err(|_| invalid("invalid bookmark URL"))?;
-                if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
-                    return Err(invalid("unsupported bookmark URL"));
-                }
-                Ok(PathBuf::from(url.as_str()))
-            }
+            Some("url") => Ok(PathBuf::from(bookmark(&path)?.as_str())),
             Some("corklink") => {
                 let target = PathBuf::from(read_text(&path, NOTE_LIMIT as u64)?);
                 if !target.is_absolute() || !target.symlink_metadata()?.is_file() {
@@ -661,6 +696,32 @@ impl Board {
         Err(invalid("no available card filename"))
     }
 
+    pub fn configure_card(
+        &mut self,
+        index: usize,
+        tone: Option<u8>,
+        show_pin: bool,
+        pos: [i32; 2],
+    ) -> io::Result<()> {
+        valid_position(pos)?;
+        if index >= self.cards.len() || tone.is_some_and(|n| n >= 4) {
+            return Err(invalid("invalid card options"));
+        }
+        let mut next = self.manifest.clone();
+        let card = next["cards"].as_array_mut().unwrap()[index]
+            .as_table_mut()
+            .unwrap();
+        if let Some(n) = tone {
+            card.insert("tone".into(), i64::from(n).into());
+        } else {
+            card.remove("tone");
+        }
+        card.insert("show_pin".into(), show_pin.into());
+        card.insert("x".into(), pos[0].into());
+        card.insert("y".into(), pos[1].into());
+        self.commit_layout(next)
+    }
+
     pub fn move_card(&mut self, index: usize, pos: [i32; 2]) -> io::Result<()> {
         valid_position(pos)?;
         let card = self
@@ -876,6 +937,54 @@ mod tests {
         assert_eq!(board.cards()[0].position, [86, 105]);
         assert_eq!(board.cards()[0].text, text);
         assert_eq!(board.cards()[1].position, [0, 0]);
+    }
+
+    #[test]
+    fn card_options_persist_and_undo_to_pilot_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("Paper", [10, 10]).unwrap();
+        board.configure_card(0, Some(3), false, [30, 20]).unwrap();
+        assert!(board.undo_layout().unwrap());
+        assert!(board.cards()[0].show_pin);
+        assert_eq!(board.cards()[0].tone, None);
+        assert_eq!(board.cards()[0].position, [10, 10]);
+        board.configure_card(0, Some(2), false, [40, 50]).unwrap();
+        drop(board);
+        let board = Board::open(root.path()).unwrap();
+        assert_eq!(board.list_entries()[0].tone, Some(2));
+        assert!(!board.cards()[0].show_pin);
+        assert_eq!(board.cards()[0].position, [40, 50]);
+    }
+
+    #[test]
+    fn ghost_retention_survives_restart_and_resets_when_a_file_returns() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("retain", [7, 8]).unwrap();
+        let file = board.note_path(0).unwrap();
+        fs::remove_file(&file).unwrap();
+        board.refresh().unwrap();
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        assert!(!board.expire_missing(1, now).unwrap());
+        drop(board);
+        let mut board = Board::open(root.path()).unwrap();
+        fs::write(&file, "restored").unwrap();
+        board.refresh().unwrap();
+        let later = now + std::time::Duration::from_secs(90_000);
+        assert!(!board.expire_missing(1, later).unwrap());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "restored");
+        fs::remove_file(file).unwrap();
+        board.refresh().unwrap();
+        assert!(!board.expire_missing(1, later).unwrap());
+        assert!(!board.expire_missing(0, later).unwrap());
+        assert!(!board.expire_missing(1, later).unwrap());
+        assert!(
+            board
+                .expire_missing(1, later + std::time::Duration::from_secs(86_400))
+                .unwrap()
+        );
+        assert!(board.cards().is_empty() && board.trashed_files().is_empty());
     }
 
     #[test]

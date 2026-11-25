@@ -86,11 +86,11 @@ def windows_zip(dest, sha):
         tool_prefix = Path(shutil.which(gcc)).resolve().parents[1]
         for package in ("gcc-mingw-w64-base", "mingw-w64-common"):
             shutil.copy(tool_prefix / "share/doc" / package / "copyright", stage / (package + "-copyright.txt"))
-        shutil.copy("scripts/verify-windows.ps1", stage)
-        shutil.copy("scripts/verify-text-cards.ps1", stage)
-        shutil.copy("scripts/verify-strings.ps1", stage)
-        shutil.copy("scripts/verify-everyday.ps1", stage)
-        shutil.copy("scripts/test-strings-windows.md", stage)
+        roundup = Path("scripts/verify-roundup.ps1").read_text()
+        for verifier in ("verify-windows.ps1", "verify-everyday.ps1"):
+            roundup = roundup.replace(f"& (Join-Path $PSScriptRoot '{verifier}')",
+                                      Path("scripts", verifier).read_text())
+        (stage / "verify-roundup.ps1").write_text(roundup, encoding="utf-8-sig")
         (stage / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
         archive = Path(scratch) / (name + ".zip")
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
