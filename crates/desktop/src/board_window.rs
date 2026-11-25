@@ -3,9 +3,11 @@ use eframe::egui::{self, Color32, Key, Pos2, Rect, Sense, Vec2, vec2};
 use std::{path::Path, time::Duration};
 
 mod fonts;
+mod hud;
 mod images;
 mod list;
 mod material;
+mod onboarding;
 mod opener;
 mod placard;
 mod spatial;
@@ -71,6 +73,9 @@ pub struct BoardWindow {
     #[cfg(windows)]
     tray: Option<crate::shell::tray::Handle>,
     showing_settings: bool,
+    show_bin: bool,
+    setup: onboarding::Setup,
+    tutorial: bool,
     flat_list: Option<list::FlatList>,
     picker_open: bool,
     hidden: bool,
@@ -269,7 +274,20 @@ impl BoardWindow {
 
     fn show_root(&mut self, result: std::io::Result<Board>) {
         let result = result.and_then(|board| {
-            let preferences = corktop_board::Preferences::load(board.root())?;
+            let mut preferences = corktop_board::Preferences::load(board.root())?;
+            if self.setup.active {
+                if self.setup.styled {
+                    preferences.store("appearance", &self.setup.style)?;
+                }
+                if let Some(link) = self.setup.links {
+                    preferences.set("link_file_drops", link.into())?;
+                }
+                if preferences.get::<bool>("tutorial_seen")?.is_none() {
+                    preferences.set("tutorial_seen", false.into())?;
+                }
+                self.setup = Default::default();
+            }
+            self.tutorial = !preferences.flag("tutorial_seen", true);
             self.materials.style = preferences.get("appearance")?.unwrap_or_default();
             self.materials.files = preferences.override_files().unwrap_or_default();
             if let Err(e) = self.materials.load_assets(&preferences) {
@@ -374,86 +392,30 @@ impl BoardWindow {
         if self.placard.show(ctx, enabled && visible) {
             return;
         }
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let title = ui.heading("corktop").interact(Sense::drag());
-                if title.drag_started() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
-
-                if !self.parents.is_empty() && ui.button("Parent folder").clicked() {
-                    self.canvas = self.parents.pop();
-                }
-                if let Some(canvas) = self.canvas.as_mut() {
-                    ui.separator();
-                    if ui.button("Flat list").clicked() {
-                        self.flat_list = Some(list::FlatList::open(&canvas.board));
-                    }
-                    if let Some(prefs) = self.preferences.as_mut() {
-                        if ui.button("Settings").clicked() {
-                            self.showing_settings = true;
-                        }
-                        canvas.display_only = prefs.flag("display_only_titles", false);
-                        canvas.link_drops = prefs.flag("link_file_drops", false);
-                    }
-                    if ui
-                        .selectable_label(canvas.spatial.placing, "Pin")
-                        .on_hover_text("Place a bare tack on the board")
-                        .clicked()
-                    {
-                        canvas.spatial.placing = !canvas.spatial.placing;
-                    }
-                    let trash = canvas.board.trashed_files();
-                    if !trash.is_empty() {
-                        ui.menu_button("Recycle bin", |ui| {
-                            if ui.button("Empty bin…").clicked() {
-                                canvas.confirm_empty = true;
-                                ui.close();
-                            }
-                            for name in trash {
-                                if ui.button(format!("Restore {name}")).clicked() {
-                                    if let Err(e) = canvas.board.restore(&name) {
-                                        self.error = e.to_string();
-                                    }
-                                    ui.close();
-                                }
-                            }
-                        });
-                    }
-                    let count = canvas.board.inbox().len();
-                    if count > 0 {
-                        let mut pin = None;
-                        ui.menu_button(format!("Inbox (+{count})"), |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(260.0)
-                                .show(ui, |ui| {
-                                    for name in canvas.board.inbox() {
-                                        if ui.button(name).clicked() {
-                                            pin = Some(name.clone());
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                        });
-                        if let Some(file) = pin
-                            && let Err(e) = canvas.board.pin_files(&[file])
-                        {
-                            self.error = e.to_string();
-                        }
-                    } else {
-                        ui.label("Double-click to write a note. Drag a card to move it.");
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        if self.canvas.is_some() && self.occupied.is_none() {
+            self.hud(ctx);
+        }
+        if !self.error.is_empty() {
+            egui::TopBottomPanel::bottom("board-error").show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, &self.error);
+                    if ui.small_button("Dismiss").clicked() {
+                        self.error.clear();
                     }
                 });
             });
-            if !self.error.is_empty() {
-                ui.colored_label(ui.visuals().error_fg_color, &self.error);
+        }
+        if self.tutorial
+            && self.canvas.is_some()
+            && self.occupied.is_none()
+            && onboarding::tutorial(ctx, &self.materials.style)
+            && let Some(p) = &mut self.preferences
+        {
+            match p.set("tutorial_seen", true.into()) {
+                Ok(()) => self.tutorial = false,
+                Err(e) => self.error = e.to_string(),
             }
-        });
+        }
         if let Some(list) = &mut self.flat_list {
             let mut open = true;
             let selected = list.show(ctx, &self.materials.style, &mut open);
@@ -469,8 +431,21 @@ impl BoardWindow {
         if self.showing_settings {
             let mut show = true;
             egui::Window::new("Settings")
+                .vscroll(true)
                 .open(&mut show)
                 .show(ctx, |ui| {
+                    ui.collapsing("Gestures and keys", |ui| {
+                        for instruction in [
+                            "Click a card to copy. Double-click to open its file.",
+                            "Double-click empty board space to write. Ctrl+Enter saves.",
+                            "Hold a tack and drag to connect. Scroll to change yarn color.",
+                            "Connect three bare tacks in a loop to name a zone.",
+                            "Right-click a strand to cut it. Ctrl+Z undoes a board edit.",
+                            "Hold Ctrl to alternate copy and link on drop. Shift moves the file.",
+                        ] {
+                            ui.label(instruction);
+                        }
+                    });
                     if ui.button("Switch folder…").clicked() {
                         self.choose();
                     }
@@ -495,6 +470,14 @@ impl BoardWindow {
                         }
                     }
                     if let Some(prefs) = &mut self.preferences {
+                        if ui.button("Replay tutorial").clicked() {
+                            match prefs.set("tutorial_seen", false.into()) {
+                                Ok(()) => {
+                                    self.tutorial = true;
+                                }
+                                Err(e) => self.error = e.to_string(),
+                            }
+                        }
                         let mut style = self.materials.style.clone();
                         style.controls(ui, &self.materials.files);
                         if ui
@@ -561,10 +544,18 @@ impl BoardWindow {
                 });
             self.showing_settings = show;
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let panel = egui::CentralPanel::default();
+        let panel = if self.canvas.is_some() && self.occupied.is_none() {
+            panel.frame(egui::Frame::NONE)
+        } else {
+            panel
+        };
+        panel.show(ctx, |ui| {
             if let Some(canvas) = &mut self.canvas
                 && self.occupied.is_none()
             {
+                self.materials
+                    .paint(ui, ui.max_rect(), ui.min_rect().min, 1.);
                 let scroll = egui::scroll_area::ScrollSource {
                     drag: false,
                     ..Default::default()
@@ -607,20 +598,10 @@ impl BoardWindow {
                     self.show_root(result);
                 }
             } else {
-                ui.label("Board folder");
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut self.folder)
-                        .hint_text("Path to an empty folder or an existing board")
-                        .desired_width(440.0),
-                );
-                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                if ui.button("Browse…").clicked() {
-                    self.choose();
-                }
-                if ui.button("Open folder").clicked() || enter {
-                    let folder = self.folder.clone();
-                    self.open(Path::new(&folder));
-                }
+                self.materials.style = self.setup.style.clone();
+                self.materials
+                    .paint(ui, ui.max_rect(), ui.min_rect().min, 1.);
+                self.setup_card(ctx);
             }
         });
     }
