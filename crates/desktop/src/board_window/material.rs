@@ -391,7 +391,7 @@ impl Materials {
         }
         if let Some(name) = &self.style.font {
             let data = prefs.read_override(name)?;
-            ttf_parser::Face::parse(&data, 0)
+            ab_glyph::FontRef::try_from_slice(&data)
                 .map_err(|_| io::Error::other("invalid font override"))?;
             self.custom_font = Some(egui::FontData::from_owned(data).into());
         }

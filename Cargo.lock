@@ -394,6 +394,7 @@ dependencies = [
 name = "corktop"
 version = "0.4.0"
 dependencies = [
+ "ab_glyph",
  "arboard",
  "corktop-board",
  "eframe",
@@ -409,7 +410,6 @@ dependencies = [
  "smithay-client-toolkit 0.19.2",
  "smithay-clipboard",
  "tempfile",
- "ttf-parser",
  "url",
  "wayland-backend",
  "wayland-client",
