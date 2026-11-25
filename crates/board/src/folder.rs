@@ -946,6 +946,36 @@ mod tests {
     }
 
     #[test]
+    fn ghost_retention_survives_restart_and_resets_when_a_file_returns() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("retain", [7, 8]).unwrap();
+        let file = board.note_path(0).unwrap();
+        fs::remove_file(&file).unwrap();
+        board.refresh().unwrap();
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        assert!(!board.expire_missing(1, now).unwrap());
+        drop(board);
+        let mut board = Board::open(root.path()).unwrap();
+        fs::write(&file, "restored").unwrap();
+        board.refresh().unwrap();
+        let later = now + std::time::Duration::from_secs(90_000);
+        assert!(!board.expire_missing(1, later).unwrap());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "restored");
+        fs::remove_file(file).unwrap();
+        board.refresh().unwrap();
+        assert!(!board.expire_missing(1, later).unwrap());
+        assert!(!board.expire_missing(0, later).unwrap());
+        assert!(!board.expire_missing(1, later).unwrap());
+        assert!(
+            board
+                .expire_missing(1, later + std::time::Duration::from_secs(86_400))
+                .unwrap()
+        );
+        assert!(board.cards().is_empty() && board.trashed_files().is_empty());
+    }
+
+    #[test]
     fn interrupted_move() {
         if let Some(root) = std::env::var_os("CORKTOP_TEST_INTERRUPT_ROOT") {
             let mut board = Board::open(Path::new(&root)).unwrap();

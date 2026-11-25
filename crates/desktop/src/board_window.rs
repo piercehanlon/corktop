@@ -50,6 +50,7 @@ struct Canvas {
     confirm_empty: bool,
     display_only: bool,
     link_drops: bool,
+    ghost_days: u8,
     images: images::Images,
     reveal: Option<(String, std::time::Instant, bool)>,
     pasted_text: bool,
@@ -324,6 +325,7 @@ impl BoardWindow {
                     confirm_empty: false,
                     display_only: false,
                     link_drops: false,
+                    ghost_days: 0,
                     images: Default::default(),
                     reveal: None,
                     pasted_text: false,
@@ -538,6 +540,23 @@ impl BoardWindow {
                             ui.small("Smart.");
                             ctx.request_repaint_after(left);
                         }
+                        let saved = prefs
+                            .get::<u8>("ghost_retention_days")
+                            .ok()
+                            .flatten()
+                            .unwrap_or(0);
+                        let mut days = saved;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Dismiss missing cards after");
+                            for (v, label) in [(0, "Never"), (1, "24 hours"), (7, "7 days")] {
+                                ui.selectable_value(&mut days, v, label);
+                            }
+                        });
+                        if days != saved
+                            && let Err(e) = prefs.store("ghost_retention_days", &days)
+                        {
+                            self.error = e.to_string();
+                        }
                         for (key, label) in [
                             ("display_only_titles", "Display-only titles"),
                             ("link_file_drops", "Link dropped files by default"),
@@ -654,6 +673,18 @@ impl Canvas {
             self.next_refresh = time + Duration::from_secs(2);
             ui.ctx().request_repaint_after(Duration::from_secs(2));
             self.board.refresh()?;
+            if self.edit_title.is_none()
+                && self.tack_drag.is_none()
+                && self.moving.is_none()
+                && self.pending_copy.is_none()
+                && self.options.is_none()
+                && self.cut_menu.is_none()
+                && self
+                    .board
+                    .expire_missing(self.ghost_days, std::time::SystemTime::now())?
+            {
+                self.copied = None;
+            }
         }
         ui.ctx()
             .request_repaint_after(self.next_refresh.saturating_duration_since(time));
@@ -1014,6 +1045,8 @@ impl Canvas {
             self.paste_at = Some(card_position(p - origin));
         }
         if self.draft.is_none()
+            && self.options.is_none()
+            && self.edit_title.is_none()
             && self.cut_menu.is_none()
             && self.moving.is_none()
             && self.tack_drag.is_none()
@@ -1106,6 +1139,7 @@ impl Canvas {
         let max = logical((offset(self.board.canvas_size()) - CARD_SIZE).max(Vec2::ZERO));
         let mut close = false;
         let mut apply = false;
+        let mut dismiss = false;
         egui::Window::new("Card options")
             .collapsible(false)
             .resizable(false)
@@ -1138,6 +1172,9 @@ impl Canvas {
                         );
                     }
                 });
+                if card.missing && ui.button("Dismiss missing card").clicked() {
+                    dismiss = true;
+                }
                 if ui.button("Edit card title").clicked() {
                     self.edit_title = Some((
                         idx,
@@ -1166,7 +1203,12 @@ impl Canvas {
             self.board
                 .configure_card(idx, options.tone, options.show_pin, options.position)?;
         }
-        if close || apply {
+        if dismiss {
+            self.board.remove_card(idx)?;
+            self.pending_copy = None;
+            self.copied = None;
+        }
+        if close || apply || dismiss {
             self.options = None;
         }
         Ok(())
@@ -1247,29 +1289,51 @@ impl Canvas {
             }
             paste_released
         });
-        if release && !std::mem::take(&mut self.pasted_text) {
-            let pos = self.paste_at.unwrap_or_else(|| {
-                logical(
-                    ((ui.clip_rect().min - origin + vec2(12.0, 12.0)) / scale)
-                        .min(extent - CARD_SIZE),
-                )
-            });
+        let binary_paste = release && !std::mem::take(&mut self.pasted_text);
+        if pastes.is_empty() && !binary_paste {
+            return Ok(());
+        }
+        let start = self.paste_at.unwrap_or_else(|| {
+            logical(
+                ((ui.clip_rect().min - origin + vec2(12.0, 12.0)) / scale).min(extent - CARD_SIZE),
+            )
+        });
+        let free_position = |board: &Board| {
+            let mut pos = start;
+            for _ in 0..board.cards().len() {
+                if !board.cards().iter().any(|c| c.position == pos) {
+                    break;
+                }
+                pos[1] = (pos[1] + 26) % (extent.y as i32 - 111).max(1);
+                pos[0] = (pos[0] + 8) % (extent.x as i32 - 219).max(1);
+            }
+            pos
+        };
+        // File managers can offer both text and a native file list for one copy.
+        // Some compositors expose text events without a data-control clipboard.
+        let files = match self.images.clipboard_files() {
+            Ok(files) => files,
+            Err(_) if !pastes.is_empty() => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        if !files.is_empty() {
+            for path in files {
+                self.board.import_file(
+                    &path,
+                    free_position(&self.board),
+                    self.link_drops,
+                    false,
+                )?;
+            }
+            ui.ctx().request_repaint();
+            return Ok(());
+        }
+        if binary_paste {
+            let pos = free_position(&self.board);
             self.images.paste(&mut self.board, pos)?;
         }
         for text in pastes {
-            let mut pos = self.paste_at.unwrap_or_else(|| {
-                logical(
-                    ((ui.clip_rect().min - origin + vec2(12.0, 12.0)) / scale)
-                        .min(extent - CARD_SIZE),
-                )
-            });
-            for _ in 0..self.board.cards().len() {
-                if !self.board.cards().iter().any(|c| c.position == pos) {
-                    break;
-                }
-                pos[1] = (pos[1] + 26) % (extent.y as i32 - 111);
-                pos[0] = (pos[0] + 8) % (extent.x as i32 - 219);
-            }
+            let pos = free_position(&self.board);
             self.board.paste_text(&text, pos)?;
             ui.ctx().request_repaint();
         }

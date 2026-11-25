@@ -29,6 +29,51 @@ pub(super) fn copy_without_overwrite(source: &Path, destination: &Path) -> io::R
 }
 
 impl Board {
+    /// Retention starts on the first observation under an enabled cleanup policy.
+    pub fn expire_missing(&mut self, days: u8, now: SystemTime) -> io::Result<bool> {
+        let now = i64::try_from(now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+            .map_err(|_| invalid("clock outside supported range"))?;
+        let mut updates = Vec::new();
+        let mut expired = Vec::new();
+        let Some(entries) = self.manifest.get("cards").and_then(Value::as_array) else {
+            return Ok(false);
+        };
+        for (idx, (entry, card)) in entries.iter().zip(&self.cards).enumerate() {
+            let since = entry.get("missing_since").and_then(Value::as_integer);
+            if !card.missing || days == 0 {
+                if since.is_some() {
+                    updates.push((idx, None));
+                }
+            } else if let Some(since) = since {
+                if now.saturating_sub(since) >= i64::from(days) * 86_400 {
+                    expired.push(idx);
+                }
+            } else {
+                updates.push((idx, Some(now)));
+            }
+        }
+        if !updates.is_empty() {
+            self.check_manifest()?;
+            let mut next = self.manifest.clone();
+            let entries = next["cards"].as_array_mut().unwrap();
+            for (idx, time) in updates {
+                let t = entries[idx].as_table_mut().unwrap();
+                if let Some(time) = time {
+                    t.insert("missing_since".into(), time.into());
+                } else {
+                    t.remove("missing_since");
+                }
+            }
+            save(&self.root, &next)?;
+            self.manifest = next;
+        }
+        let changed = !expired.is_empty();
+        for idx in expired.into_iter().rev() {
+            self.remove_card(idx)?;
+        }
+        Ok(changed)
+    }
+
     fn trash_folder(&self) -> io::Result<PathBuf> {
         let path = self.root.join(".trash");
         match fs::create_dir(&path) {
@@ -340,6 +385,7 @@ impl Board {
         }
         let trash_folder = self.trash_folder()?;
         let mut card = Card::load(&trash_folder, name, pos)?;
+        (card.tone, card.show_pin) = card_style(entry)?;
         card.title = entry
             .get("title")
             .and_then(Value::as_str)
