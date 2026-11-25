@@ -423,35 +423,42 @@ impl BoardWindow {
             self.hud(ctx);
         }
         if !self.machine.desktop && !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
-            egui::Area::new("window-resize-grip".into())
-                .order(egui::Order::Foreground)
-                .default_size(vec2(14., 14.))
-                .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::ZERO)
-                .movable(false)
-                .show(ctx, |ui| {
-                    let (r, grip) = ui.allocate_exact_size(vec2(14., 14.), Sense::drag());
-                    ui.painter()
-                        .rect_filled(r, 2., Color32::from_black_alpha(180));
-                    for d in [5., 9.] {
-                        ui.painter().line_segment(
-                            [
-                                r.right_bottom() - vec2(d, 2.),
-                                r.right_bottom() - vec2(2., d),
-                            ],
-                            egui::Stroke::new(1.5, Color32::WHITE),
-                        );
-                    }
-                    if grip
-                        .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
-                        .on_hover_text("Drag to resize")
-                        .is_pointer_button_down_on()
-                        && ui.input(|i| i.pointer.primary_pressed())
-                    {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
-                            egui::ResizeDirection::SouthEast,
-                        ));
-                    }
-                });
+            for (corner, direction, cursor) in [
+                (
+                    egui::Align2::LEFT_TOP,
+                    egui::ResizeDirection::NorthWest,
+                    egui::CursorIcon::ResizeNwSe,
+                ),
+                (
+                    egui::Align2::RIGHT_TOP,
+                    egui::ResizeDirection::NorthEast,
+                    egui::CursorIcon::ResizeNeSw,
+                ),
+                (
+                    egui::Align2::LEFT_BOTTOM,
+                    egui::ResizeDirection::SouthWest,
+                    egui::CursorIcon::ResizeNeSw,
+                ),
+                (
+                    egui::Align2::RIGHT_BOTTOM,
+                    egui::ResizeDirection::SouthEast,
+                    egui::CursorIcon::ResizeNwSe,
+                ),
+            ] {
+                egui::Area::new(egui::Id::new(("resize", corner)))
+                    .order(egui::Order::Foreground)
+                    .default_size(vec2(12., 12.))
+                    .anchor(corner, Vec2::ZERO)
+                    .movable(false)
+                    .show(ctx, |ui| {
+                        let (_, r) = ui.allocate_exact_size(vec2(12., 12.), Sense::drag());
+                        if r.on_hover_cursor(cursor).is_pointer_button_down_on()
+                            && ui.input(|i| i.pointer.primary_pressed())
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                        }
+                    });
+            }
         }
         if !self.error.is_empty() {
             egui::TopBottomPanel::bottom("board-error").show(ctx, |ui| {
@@ -495,6 +502,8 @@ impl BoardWindow {
                     ui.collapsing("Help", |ui| {
                         for instruction in [
                             "Click a card to copy. Double-click to open its file.",
+                            "Right-click a card for editing or recycling. Drag its body to move.",
+                            "Drag empty banner space to move the window; drag any corner to resize.",
                             "Double-click empty board space to write. Ctrl+Enter saves.",
                             "Hold a tack and drag to connect. Scroll to change yarn color.",
                             "Connect three bare tacks in a loop to name a zone.",
@@ -898,7 +907,6 @@ impl Canvas {
         let now = ui.input(|i| i.time);
         let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
         let mut dropped = None;
-        let mut remove = None;
         let mut rects = Vec::with_capacity(self.board.cards().len());
         for (idx, card) in self.board.cards().iter().enumerate() {
             let position = self
@@ -907,22 +915,7 @@ impl Canvas {
                 .map_or(card.position, |(_, pos)| pos);
             let rect = Rect::from_min_size(origin + offset(position) * scale, CARD_SIZE * scale);
             let response = ui.interact(rect, ui.id().with(("card", idx)), Sense::click_and_drag());
-            let mut edit = response.secondary_clicked();
-            if self.options.is_none()
-                && response.is_pointer_button_down_on()
-                && let Some(elapsed) = ui.input(|i| {
-                    let p = &i.pointer;
-                    (p.primary_down() && p.press_origin()?.distance(p.interact_pos()?) < 4.)
-                        .then_some(i.time - p.press_start_time()?)
-                })
-            {
-                if elapsed >= 0.52 {
-                    edit = true;
-                } else {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_secs_f64(0.52 - elapsed));
-                }
-            }
+            let edit = response.secondary_clicked();
             if self.options.is_none()
                 && !edit
                 && self.draft.is_none()
@@ -1010,20 +1003,6 @@ impl Canvas {
             } else {
                 painter.rect_filled(rect, 4., paper);
             }
-            if rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO)) {
-                let edit_rect =
-                    Rect::from_min_size(rect.right_bottom() - vec2(44.0, 23.0), vec2(42.0, 21.0));
-                if ui
-                    .put(
-                        edit_rect,
-                        egui::Button::new("Edit").fill(Color32::from_gray(42)),
-                    )
-                    .on_hover_text("Card options")
-                    .clicked()
-                {
-                    edit = true;
-                }
-            }
             if edit {
                 self.pending_copy = None;
                 self.moving = None;
@@ -1033,23 +1012,6 @@ impl Canvas {
                     show_pin: card.show_pin,
                     position: card.position,
                 });
-            }
-            if !card.folder
-                && rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO))
-            {
-                let button =
-                    Rect::from_min_size(rect.right_top() + vec2(-24.0, 2.0), vec2(22.0, 22.0));
-                if ui
-                    .put(button, egui::Button::new("×").fill(Color32::from_gray(42)))
-                    .on_hover_text(if card.missing {
-                        "Dismiss missing card"
-                    } else {
-                        "Move to recycle bin"
-                    })
-                    .clicked()
-                {
-                    remove = Some(idx);
-                }
             }
             let pin = card.show_pin.then(|| {
                 ui.interact(
@@ -1115,16 +1077,6 @@ impl Canvas {
             }
             painter.galley(rect.min + vec2(10.0, 47.0) * scale, text, ink);
         }
-        if let Some(idx) = remove {
-            self.board.remove_card(idx)?;
-            self.pending_copy = None;
-            self.copied = None;
-            self.moving = None;
-            self.tack_drag = None;
-            self.cut_menu = None;
-            ui.ctx().request_repaint();
-            return Ok(());
-        }
         if self.confirm_empty {
             let mut empty = false;
             egui::Window::new("Permanently empty this board’s recycle bin?")
@@ -1142,6 +1094,10 @@ impl Canvas {
             }
         }
         self.card_options(ui, style)?;
+        if rects.len() != self.board.cards().len() {
+            ui.ctx().request_repaint();
+            return Ok(());
+        }
         if let Some((idx, text)) = &mut self.edit_title {
             let mut done = false;
             let mut commit = false;
@@ -1298,7 +1254,15 @@ impl Canvas {
                         );
                     }
                 });
-                if card.missing && ui.button("Dismiss missing card").clicked() {
+                if !card.folder
+                    && ui
+                        .button(if card.missing {
+                            "Dismiss missing card"
+                        } else {
+                            "Move to recycle bin"
+                        })
+                        .clicked()
+                {
                     dismiss = true;
                 }
                 if ui.button("Edit card title").clicked() {
