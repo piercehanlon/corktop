@@ -1,6 +1,8 @@
 //! Folder boards and the disposable installation probe.
 mod folder;
+mod preferences;
 pub use folder::{Board, Card};
+pub use preferences::Preferences;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
