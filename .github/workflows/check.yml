@@ -1,0 +1,17 @@
+name: Build checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  board:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --locked -p corktop-board exported_link_survives_relocation_and_source_removal
+  workspace:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - run: cargo test --locked --workspace
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
