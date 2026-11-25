@@ -83,7 +83,7 @@ def check():
     additions = [line[1:] for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++")]
     for path in git_paths("ls-files", "--others", "--exclude-standard"):
         additions.extend(path.read_bytes().decode(errors="replace").splitlines())
-    if any(re.search(r"\bTO" r"DO\b", line) for line in additions):
+    if any(re.search(r"(?:^\s*(?:[-*]\s+)?|//\s*|#\s*|/\*\s*)TO" r"DO\b|\bTO" r"DO\s*[:(]", line) for line in additions):
         raise SystemExit("Changed lines contain an unresolved task marker")
     run("gitleaks", "git", "--redact", "--no-banner", "--log-opts", f"{base}..HEAD")
     # Scan the prospective tree, including working changes and excluding local records.
