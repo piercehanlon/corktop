@@ -5,7 +5,7 @@ pub(super) struct Setup {
     pub active: bool,
     pub style: material::Style,
     pub styled: bool,
-    pub links: Option<bool>,
+    pub drop_action: Option<file_drop::Action>,
 }
 impl BoardWindow {
     pub(super) fn setup_card(&mut self, ctx: &egui::Context) {
@@ -47,12 +47,9 @@ impl BoardWindow {
                         let before = self.setup.style.clone();
                         self.setup.style.controls(ui, &[]);
                         self.setup.styled |= before != self.setup.style;
-                        let mut link = self.setup.links.unwrap_or(false);
-                        if ui
-                            .checkbox(&mut link, "Link dropped files by default")
-                            .changed()
-                        {
-                            self.setup.links = Some(link);
+                        let mut action = self.setup.drop_action.unwrap_or_default();
+                        if action.setting(ui) {
+                            self.setup.drop_action = Some(action);
                         }
                         ui.horizontal_wrapped(|ui| {
                             if ui
