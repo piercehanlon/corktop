@@ -4,9 +4,9 @@ use super::*;
 pub(super) struct Spatial {
     pub placing: bool,
     drag: Option<PinDrag>,
-    relocate: Option<usize>,
+    pub(super) relocate: Option<usize>,
     rename: Option<(usize, String)>,
-    zone_origin: Option<(usize, Pos2)>,
+    zone_origin: Option<(usize, Pos2, Vec2)>,
     naming: Option<(Vec<usize>, String)>,
 }
 
@@ -27,6 +27,7 @@ impl Spatial {
         background: &egui::Response,
         style: &material::Style,
     ) -> std::io::Result<()> {
+        let extent = background.rect.size() / scale;
         let pointer = ui.input(|i| i.pointer.interact_pos());
 
         if self.placing
@@ -41,30 +42,22 @@ impl Spatial {
             && background.clicked()
             && let Some(p) = pointer
         {
-            board.add_pin(logical(
-                ((p - origin) / scale).min(offset(board.canvas_size()) - vec2(6.0, 6.0)),
-            ))?;
+            board.add_pin(logical(((p - origin) / scale).min(extent - vec2(6.0, 6.0))))?;
             self.placing = false;
         }
-        if let Some(id) = self.relocate {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
-            if ui.input(|i| i.key_pressed(Key::Escape)) {
-                self.relocate = None;
-            } else if background.clicked()
-                && let Some(p) = pointer
-            {
-                board.move_pin(
-                    id,
-                    logical(((p - origin) / scale).min(offset(board.canvas_size()) - vec2(6., 6.))),
-                )?;
-                self.relocate = None;
-            }
-        }
+        let relocating = self.relocate;
         let geometry = board.geometry();
         let points: Vec<_> = geometry
             .pins
             .iter()
-            .map(|p| origin + offset(*p) * scale)
+            .enumerate()
+            .map(|(i, p)| {
+                if relocating == Some(i) {
+                    pointer.unwrap_or(origin + offset(*p) * scale)
+                } else {
+                    origin + offset(*p) * scale
+                }
+            })
             .collect();
         let mut dissolve = None;
         let mut pack_zone = None;
@@ -82,16 +75,26 @@ impl Spatial {
                 .interact(label, ui.id().with(("zone", i)), Sense::click_and_drag())
                 .on_hover_cursor(egui::CursorIcon::Grab)
                 .on_hover_text("Drag to move the zone · Right-click for options");
-            if response.drag_started_by(egui::PointerButton::Primary) {
-                self.zone_origin = ui
-                    .input(|input| input.pointer.press_origin())
-                    .map(|p| (i, p));
+            if response.is_pointer_button_down_on()
+                && ui.input(|i| i.pointer.primary_pressed())
+                && let Some(start) = pointer
+            {
+                self.zone_origin = Some((i, start, Vec2::ZERO));
             }
-            let delta = self
-                .zone_origin
-                .filter(|(idx, _)| *idx == i)
-                .and_then(|(_, start)| pointer.map(|p| p - start))
-                .unwrap_or_default();
+            let mut delta = Vec2::ZERO;
+            if let Some((id, start, last)) = &mut self.zone_origin
+                && *id == i
+            {
+                if let Some(p) = pointer
+                    && (response.dragged() || p.distance(*start) > 5. || *last != Vec2::ZERO)
+                {
+                    let raw = (p - *start) / scale;
+                    *last = offset(
+                        board.zone_translation(i, [raw.x.round() as i32, raw.y.round() as i32])?,
+                    ) * scale;
+                }
+                delta = *last;
+            }
             if delta != Vec2::ZERO {
                 let mut ring: Vec<_> = z.pins.iter().map(|&n| points[n] + delta).collect();
                 ring.push(ring[0]);
@@ -137,17 +140,19 @@ impl Spatial {
                     }
                 }
             });
-            if response.drag_stopped_by(egui::PointerButton::Primary)
-                && self.zone_origin.take().is_some()
-                && delta != Vec2::ZERO
+            if self.zone_origin.is_some_and(|(id, _, _)| id == i)
+                && ui.input(|i| i.pointer.primary_released())
             {
-                moved_zone = Some((
-                    i,
-                    [
-                        (delta.x / scale).round() as i32,
-                        (delta.y / scale).round() as i32,
-                    ],
-                ));
+                self.zone_origin = None;
+                if delta != Vec2::ZERO {
+                    moved_zone = Some((
+                        i,
+                        [
+                            (delta.x / scale).round() as i32,
+                            (delta.y / scale).round() as i32,
+                        ],
+                    ));
+                }
             }
         }
         let mut remove_pin = None;
@@ -159,6 +164,8 @@ impl Spatial {
             );
             pin.context_menu(|ui| {
                 if ui.button("Move tack").clicked() {
+                    self.placing = false;
+                    self.drag = None;
                     self.relocate = Some(id);
                     ui.close();
                 }
@@ -176,6 +183,34 @@ impl Spatial {
                     color: 0,
                 });
             }
+        }
+        if let Some(id) = relocating {
+            let target = ui.interact(
+                background.rect.intersect(ui.clip_rect()),
+                ui.id().with("place-moving-tack"),
+                Sense::click(),
+            );
+            if let Some(p) = pointer.filter(|p| target.rect.contains(*p)) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                let stroke = egui::Stroke::new(2., Color32::from_rgb(166, 23, 35));
+                ui.painter().circle_stroke(p, 14., stroke);
+                for d in [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y] {
+                    ui.painter()
+                        .line_segment([p + d * 10., p + d * 18.], stroke);
+                }
+            }
+            if ui.input(|i| i.pointer.secondary_pressed() || i.key_pressed(Key::Escape)) {
+                self.relocate = None;
+            } else if target.clicked()
+                && let Some(p) = target.interact_pointer_pos()
+            {
+                board.move_pin(
+                    id,
+                    logical(((p - origin) / scale).min(extent - vec2(6., 6.))),
+                )?;
+                self.relocate = None;
+            }
+            return Ok(());
         }
         if let Some(idx) = dissolve {
             board.dissolve_zone(idx)?;
@@ -236,9 +271,7 @@ impl Spatial {
             }
             if ui.input(|i| i.pointer.primary_released()) {
                 let drag = self.drag.take().unwrap();
-                let pos = logical(
-                    ((p - origin) / scale).min(offset(board.canvas_size()) - vec2(6.0, 6.0)),
-                );
+                let pos = logical(((p - origin) / scale).min(extent - vec2(6.0, 6.0)));
                 if drag.moving {
                     board.move_pin(drag.id, pos)?;
                 } else if pulling && p.distance(drag.origin) > 10.0 {
