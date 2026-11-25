@@ -2,7 +2,9 @@
 
 corktop turns a folder into a desktop corkboard. Pin notes, screenshots, links, and files side by side. Pull a thread between two cards to show a connection. When you close the board, your notes are still Markdown files you can open in any editor.
 
-![Four notes on the North Point light board. Red yarn connects the station log to a maintenance slip and a tide table.](docs/media/north-point-board.png)
+| Write and save a note | Connect two cards |
+| --- | --- |
+| [![Typing a Markdown note on the board and saving it as a card](docs/media/write-a-note.gif)](docs/media/write-a-note.mp4) | [![Dragging yarn from one card’s pinhead to another card](docs/media/connect-cards.gif)](docs/media/connect-cards.mp4) |
 
 ## Download
 
@@ -24,12 +26,9 @@ Click a text card to copy its contents. Double-click to open its file in your ed
 
 ![The four tutorial cards explain copying, pasting and dropping files, pulling yarn, and marking a zone.](docs/media/tutorial.png)
 
-### Watch it in action
-
-- [Write and save a Markdown note (6 seconds, MP4)](docs/media/write-a-note.mp4)
-- [Connect two cards with yarn (5 seconds, MP4)](docs/media/connect-cards.mp4)
-
 ## Where your work lives
+
+![Four notes on the North Point light board. Red yarn connects the station log to a maintenance slip and a tide table.](docs/media/north-point-board.png)
 
 The board folder holds your files. The hidden `.board.toml` file records card positions, strings, and zones. To back up a board, copy the whole folder, including hidden files. Cards added with **Link** still depend on their original files. To keep a file with the board, use **Copy**.
 
