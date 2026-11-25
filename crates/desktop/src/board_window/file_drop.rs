@@ -92,7 +92,7 @@ impl Pending {
                     .show(ui, |ui| {
                         for (path, _) in &self.files {
                             ui.label(path.file_name().unwrap_or_default().to_string_lossy())
-                                .on_hover_text(path.display().to_string());
+                                .on_hover_text(crate::shell::display_path(path));
                         }
                     });
                 ui.checkbox(&mut self.remember, "Remember this choice");

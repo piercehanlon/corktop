@@ -107,6 +107,32 @@ impl BoardWindow {
             || egui::Popup::is_any_open(ctx);
         let mut parent = None;
         let count = canvas.board.inbox().len();
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        #[cfg(windows)]
+        let maximized = if canvas.window_handle != 0 {
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed(canvas.window_handle as _)
+                    != 0
+            }
+        } else {
+            maximized
+        };
+        let toggle_maximize = || {
+            #[cfg(windows)]
+            if canvas.window_handle != 0 {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    SW_MAXIMIZE, SW_RESTORE, ShowWindow,
+                };
+                unsafe {
+                    ShowWindow(
+                        canvas.window_handle as _,
+                        if maximized { SW_RESTORE } else { SW_MAXIMIZE },
+                    );
+                }
+                return;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        };
         if reveal {
             egui::TopBottomPanel::top("board-banner")
                 .exact_height(32.)
@@ -119,9 +145,7 @@ impl BoardWindow {
                             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                         if drag.double_clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(
-                                !ctx.input(|i| i.viewport().maximized.unwrap_or(false)),
-                            ));
+                            toggle_maximize();
                         }
                     }
                     let width = ((rect.width() - 48.) / 8.).clamp(15., 28.);
@@ -136,11 +160,10 @@ impl BoardWindow {
                             {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
-                            if !self.machine.desktop {
-                                let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                                if rail_button(
+                            if !self.machine.desktop
+                                && rail_button(
                                     ui,
-                                    if max {
+                                    if maximized {
                                         RailIcon::Restore
                                     } else {
                                         RailIcon::Maximize
@@ -150,9 +173,8 @@ impl BoardWindow {
                                     false,
                                 )
                                 .clicked()
-                                {
-                                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
-                                }
+                            {
+                                toggle_maximize();
                             }
                             ui.separator();
                             if rail_button(ui, RailIcon::Settings, "Settings", width, false)

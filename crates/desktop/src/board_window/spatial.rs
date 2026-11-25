@@ -59,6 +59,37 @@ impl Spatial {
                 }
             })
             .collect();
+        if let Some(id) = relocating {
+            for &p in &points {
+                style.pin(ui.painter(), p);
+            }
+            let target = ui.interact(
+                background.rect.intersect(ui.clip_rect()),
+                ui.id().with("place-moving-tack"),
+                Sense::click(),
+            );
+            if let Some(p) = pointer.filter(|p| target.rect.contains(*p)) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                let stroke = egui::Stroke::new(2., Color32::from_rgb(166, 23, 35));
+                ui.painter().circle_stroke(p, 14., stroke);
+                for d in [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y] {
+                    ui.painter()
+                        .line_segment([p + d * 10., p + d * 18.], stroke);
+                }
+            }
+            if ui.input(|i| i.pointer.secondary_pressed() || i.key_pressed(Key::Escape)) {
+                self.relocate = None;
+            } else if target.clicked()
+                && let Some(p) = target.interact_pointer_pos()
+            {
+                board.move_pin(
+                    id,
+                    logical(((p - origin) / scale).min(extent - vec2(6., 6.))),
+                )?;
+                self.relocate = None;
+            }
+            return Ok(());
+        }
         let mut dissolve = None;
         let mut pack_zone = None;
         let mut moved_zone = None;
@@ -183,34 +214,6 @@ impl Spatial {
                     color: 0,
                 });
             }
-        }
-        if let Some(id) = relocating {
-            let target = ui.interact(
-                background.rect.intersect(ui.clip_rect()),
-                ui.id().with("place-moving-tack"),
-                Sense::click(),
-            );
-            if let Some(p) = pointer.filter(|p| target.rect.contains(*p)) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                let stroke = egui::Stroke::new(2., Color32::from_rgb(166, 23, 35));
-                ui.painter().circle_stroke(p, 14., stroke);
-                for d in [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y] {
-                    ui.painter()
-                        .line_segment([p + d * 10., p + d * 18.], stroke);
-                }
-            }
-            if ui.input(|i| i.pointer.secondary_pressed() || i.key_pressed(Key::Escape)) {
-                self.relocate = None;
-            } else if target.clicked()
-                && let Some(p) = target.interact_pointer_pos()
-            {
-                board.move_pin(
-                    id,
-                    logical(((p - origin) / scale).min(extent - vec2(6., 6.))),
-                )?;
-                self.relocate = None;
-            }
-            return Ok(());
         }
         if let Some(idx) = dissolve {
             board.dissolve_zone(idx)?;

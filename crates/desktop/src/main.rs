@@ -41,6 +41,7 @@ fn main() -> ExitCode {
         (Some(flag), None) if flag == "--version-window" => {
             let options = eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default()
+                    .with_icon(shell::app_icon())
                     .with_decorations(false)
                     .with_inner_size([320.0, 160.0]),
                 ..Default::default()

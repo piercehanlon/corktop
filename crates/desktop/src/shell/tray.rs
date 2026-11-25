@@ -10,8 +10,17 @@ impl ksni::Tray for Tray {
     fn title(&self) -> String {
         "corktop".into()
     }
-    fn icon_name(&self) -> String {
-        "user-bookmarks".into()
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        let icon = super::app_icon();
+        let mut data = icon.rgba;
+        for px in data.chunks_exact_mut(4) {
+            px.rotate_right(1);
+        }
+        vec![ksni::Icon {
+            width: icon.width as i32,
+            height: icon.height as i32,
+            data,
+        }]
     }
     fn activate(&mut self, _: i32, _: i32) {
         self.0.send(Action::ToggleVisible);
@@ -80,7 +89,7 @@ mod native {
             ..Default::default()
         };
         unsafe {
-            data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+            data.hIcon = LoadIconW(GetModuleHandleW(null()), std::ptr::without_provenance(1));
         }
         for (p, c) in data.szTip.iter_mut().zip("corktop".encode_utf16()) {
             *p = c;

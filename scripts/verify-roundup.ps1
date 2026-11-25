@@ -1,5 +1,6 @@
 # The release ZIP embeds the two earlier checks into this single script.
-param([switch]$ResumeRoundup, [switch]$ResumeAfterExplorer, [string]$ResumeBoard)
+param([switch]$ResumeRoundup, [switch]$ResumeAfterExplorer, [string]$ResumeBoard, [switch]$ResumeDesktop)
+if ($ResumeDesktop -and !$ResumeBoard) { throw "Supply the retained Case board with -ResumeBoard when using -ResumeDesktop" }
 if ($ResumeBoard) { $ResumeAfterExplorer = $true }
 if ($ResumeAfterExplorer) { $ResumeRoundup = $true }
 $ErrorActionPreference = 'Stop'
@@ -119,25 +120,38 @@ try {
             [pscustomobject]@{id=$id; x=[int]$points[$id].Groups[1].Value; y=[int]$points[$id].Groups[2].Value}
         }
     }
-    $beforeZone = @(Read-ZonePositions)
-    if ($beforeZone.Count -lt 3) { throw "Could not read the zone boundary from $manifest" }
-    Confirm-Step 'Drag the named zone label toward open space, release, and check that Witness and the boundary tacks move together.'
-    $afterZone = @(Read-ZonePositions)
-    Write-Host ("Saved tacks before: " + ($beforeZone | ConvertTo-Json -Compress))
-    Write-Host ("Saved tacks after:  " + ($afterZone | ConvertTo-Json -Compress))
-    $dx = $afterZone[0].x - $beforeZone[0].x
-    $dy = $afterZone[0].y - $beforeZone[0].y
-    if (!$dx -and !$dy) { throw "Zone movement was not saved in $manifest" }
-    if ($beforeZone.Count -ne $afterZone.Count) { throw 'Zone boundary changed during drag' }
-    for ($i=0; $i -lt $beforeZone.Count; $i++) {
-        if ($afterZone[$i].id -ne $beforeZone[$i].id -or $afterZone[$i].x-$beforeZone[$i].x -ne $dx -or $afterZone[$i].y-$beforeZone[$i].y -ne $dy) { throw 'Zone tacks moved by different distances' }
+    if (!$ResumeDesktop) {
+        $beforeZone = @(Read-ZonePositions)
+        if ($beforeZone.Count -lt 3) { throw "Could not read the zone boundary from $manifest" }
+        Confirm-Step 'Drag the named zone label toward open space, release, and check that Witness and the boundary tacks move together.'
+        $afterZone = @(Read-ZonePositions)
+        Write-Host ("Saved tacks before: " + ($beforeZone | ConvertTo-Json -Compress))
+        Write-Host ("Saved tacks after:  " + ($afterZone | ConvertTo-Json -Compress))
+        $dx = $afterZone[0].x - $beforeZone[0].x
+        $dy = $afterZone[0].y - $beforeZone[0].y
+        if (!$dx -and !$dy) { throw "Zone movement was not saved in $manifest" }
+        if ($beforeZone.Count -ne $afterZone.Count) { throw 'Zone boundary changed during drag' }
+        for ($i=0; $i -lt $beforeZone.Count; $i++) {
+            if ($afterZone[$i].id -ne $beforeZone[$i].id -or $afterZone[$i].x-$beforeZone[$i].x -ne $dx -or $afterZone[$i].y-$beforeZone[$i].y -ne $dy) { throw 'Zone tacks moved by different distances' }
+        }
     }
-    Confirm-Step 'Widen the window and drag a card to the newly exposed right edge. Right-click a bare tack, choose Move tack, and place it there too. Try Move tack again and press Esc. Did both objects reach the new space and did Esc leave the tack in place?'
-    Confirm-Step 'Double-click the zone label and rename it. Drag empty top bar space to a screen edge to try Windows Snap, double-click the bar to maximize and restore, and resize from the edges and corners. Did the label and window respond?'
-    Confirm-Step 'Try Desktop mode and return to a standard window. Hide and show with the tray. Open a separate panel from the tray and close that panel. Did the original board remain responsive?'
-    $desktop = Read-Host 'Which desktop mode result did you observe? Enter attached or fallback'
-    if ($desktop -notin 'attached','fallback') { throw 'Desktop mode observation required' }
-    Confirm-Step 'Resize the board, refit from the empty-board context menu, and check that notes and tacks stay aligned. If using a second display with different scaling, move the window across before refitting.'
+    function Read-TackCounts {
+        $toml = [IO.File]::ReadAllText($manifest)
+        $pins = [regex]::Match($toml,'(?ms)^\[geometry\]\s*.*?^pins\s*=\s*\[((?:\s*\[\s*\d+\s*,\s*\d+\s*\]\s*,?)+)\s*\]').Groups[1].Value
+        if (!$pins) { throw 'Missing tack coordinates' }
+        '{0},{1},{2}' -f [regex]::Matches($pins,'\[').Count,[regex]::Matches($toml,'(?m)^\[\[geometry\.dividers\]\]').Count,[regex]::Matches($toml,'(?m)^\[\[geometry\.anchors\]\]').Count
+    }
+    $counts = Read-TackCounts
+    Confirm-Step 'Right-click a bare tack and choose Move tack. Place it, move the pointer away, then click blank cork. Did only the original tack move, with no trailing strand?'
+    if ((Read-TackCounts) -ne $counts) { throw 'Moving a tack changed the tack or strand count' }
+    Confirm-Step 'Double-click empty top bar space to maximize, then double-click it again. Did the window return to its previous size and position?'
+    Confirm-Step 'In Settings > Board, does the folder show a normal drive or network-share path?'
+    Confirm-Step 'Shrink the window until an item is off-screen. Click a numbered arrow to reveal it. Click Refit, then Ctrl+Z. Did the item return to its saved board position?'
+    $desktop = Read-Host 'Enable Desktop layer in Settings > Behavior. Press Win+D and try clicking a card. Enter attached if the board is interactive, fallback if corktop reports that the host is unavailable, or failed for any other result'
+    if ($desktop -notin 'attached','fallback') { throw "Desktop attachment failed: $desktop" }
+    Confirm-Step 'Return to a standard window using the corktop tray menu if needed. Can you interact with the board?'
+    Confirm-Step 'Use the corktop pushpin tray icon to hide and show the board. Did both actions work?'
+    Confirm-Step 'Choose New panel from the tray and close that panel. Is the original board still responsive?'
     $saved = [IO.File]::ReadAllText($manifest)
     Quit-Board
     $app = Start-Process $exe -PassThru
@@ -147,7 +161,7 @@ try {
     $app = $null
     [ordered]@{version=$probe.version; commit=$probe.commit; target=$probe.target; sha256=$probe.sha256;
         probes=$probe; everyday=$tour; first_copy=$(if ($ResumeAfterExplorer) {'previous RC2 run'} else {'pass'}); file_drops=$(if ($ResumeAfterExplorer) {'previous RC2 run'} else {'pass'}); ask_mode=$(if ($ResumeBoard) {'previous RC5 run'} else {'pass'}); resumed=[bool]$ResumeRoundup; setup=$(if ($ResumeBoard) {'previous RC5 run'} else {'pass'}); presentation=$(if ($ResumeBoard) {'previous RC5 run'} else {'pass'});
-        named_zone='pass'; desktop=$desktop; tray='pass'; reopen='pass'} | ConvertTo-Json -Depth 4 -Compress
+        named_zone=$(if ($ResumeDesktop) {'previous RC6 run'} else {'pass'}); desktop=$desktop; tray='pass'; reopen='pass'} | ConvertTo-Json -Depth 4 -Compress
 } finally {
     if ($app) { try { if (!$app.HasExited) { $app.Kill(); $app.WaitForExit() } } catch [System.InvalidOperationException] {} }
     foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
