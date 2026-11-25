@@ -17,3 +17,5 @@ Hold a card’s top-center tack for about 200 ms, drag to a different card, and 
 Pasting plain text on the board creates one Markdown file per paste, preserving its lines. Pasting in a draft inserts text into that draft. A single card-body click copies the current file contents after the double-click interval. Double-click opens the note through its OS file association. Moving a card or connecting its tack leaves the clipboard intact.
 
 The hit area extends 12 logical pixels from the displayed yarn curve. Hover brightens the nearest eligible strand and widens its stroke. Opening the menu keeps that strand highlighted until dismissal or cut. Yarn casts a translucent shadow three logical pixels below the curve and passes underneath each top-center pinhead.
+
+Windows uses the configured system double-click interval for both gesture recognition and deferred copy. The shell dispatches the note on a worker thread so the board can keep processing input while the default application starts or an association dialog is open.
