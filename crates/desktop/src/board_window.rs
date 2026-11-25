@@ -2,8 +2,10 @@ use corktop_board::Board;
 use eframe::egui::{self, Color32, Key, Pos2, Rect, Sense, Vec2, vec2};
 use std::{path::Path, time::Duration};
 
+mod fonts;
 mod images;
 mod opener;
+mod placard;
 mod spatial;
 
 const CARD_SIZE: Vec2 = vec2(220.0, 112.0);
@@ -55,6 +57,8 @@ struct Canvas {
 pub struct BoardWindow {
     pub control: Option<crate::shell::control::Control>,
     pub panel: bool,
+    placard: placard::Placard,
+    smart_until: Option<std::time::Instant>,
     #[cfg(target_os = "linux")]
     pub change_host: bool,
     #[cfg(target_os = "linux")]
@@ -81,6 +85,8 @@ impl BoardWindow {
     }
 
     pub fn attach(&mut self, ctx: &egui::Context) {
+        fonts::install(ctx);
+        self.placard.invalidate();
         for canvas in self.parents.iter_mut().chain(self.canvas.iter_mut()) {
             canvas.images.reset_textures();
         }
@@ -302,6 +308,15 @@ impl BoardWindow {
                 .or(self.canvas.as_ref())
                 .map(|c| c.board.root()),
         );
+        let enabled = self.canvas.is_some()
+            && self
+                .preferences
+                .as_ref()
+                .is_some_and(|p| p.flag("true_believer_mode", true));
+        let visible = !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if self.placard.show(ctx, enabled && visible) {
+            return;
+        }
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let title = ui.heading("corktop").interact(Sense::drag());
@@ -408,6 +423,26 @@ impl BoardWindow {
                         }
                     }
                     if let Some(prefs) = &mut self.preferences {
+                        let mut enabled = prefs.flag("true_believer_mode", true);
+                        if ui
+                            .checkbox(&mut enabled, "True Believer Mode")
+                            .on_hover_text("Maintains signal alignment.")
+                            .changed()
+                        {
+                            if let Err(e) = prefs.set("true_believer_mode", enabled.into()) {
+                                self.error = e.to_string();
+                            } else if !enabled {
+                                self.smart_until =
+                                    Some(std::time::Instant::now() + Duration::from_secs(2));
+                            }
+                        }
+                        if let Some(left) = self
+                            .smart_until
+                            .and_then(|end| end.checked_duration_since(std::time::Instant::now()))
+                        {
+                            ui.small("Smart.");
+                            ctx.request_repaint_after(left);
+                        }
                         for (key, label) in [
                             ("display_only_titles", "Display-only titles"),
                             ("link_file_drops", "Link dropped files by default"),
@@ -748,7 +783,7 @@ impl Canvas {
                 } else {
                     card.title.clone().unwrap_or(title)
                 },
-                egui::FontId::proportional(18.0 * scale),
+                egui::FontId::new(18.0 * scale, egui::FontFamily::Name("Marker".into())),
                 Color32::from_gray(32),
             );
             let text = painter.layout(

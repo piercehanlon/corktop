@@ -398,6 +398,7 @@ dependencies = [
  "corktop-board",
  "eframe",
  "egui_glow",
+ "fastrand",
  "glutin",
  "image",
  "interprocess",

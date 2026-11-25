@@ -29,6 +29,7 @@ def notices(dest, target):
     shutil.copy(rust_docs / "COPYRIGHT-library.html", dest)
     shutil.copytree(rust_docs / "licenses", dest / "rust-licenses")
     shutil.copy("LICENSE", dest / "LICENSE")
+    shutil.copy("THIRD_PARTY_LICENSES.md", dest)
     with (dest / "THIRD-PARTY.txt").open("w", encoding="utf-8") as stream:
         for pkg in metadata["packages"]:
             if not pkg["source"]:
