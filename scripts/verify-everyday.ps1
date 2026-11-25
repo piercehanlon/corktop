@@ -24,7 +24,7 @@ function Confirm-View($message) {
     if ($app.HasExited) { throw 'Board exited unexpectedly' }
 }
 function Close-Board {
-    $null = Read-Host 'Click Close in corktop, then press Enter here'
+    $null = Read-Host 'Choose Board > Close in corktop, then press Enter here'
     if (!$app.WaitForExit(5000) -or $app.ExitCode -ne 0) { throw 'Window did not close cleanly' }
     $app.Dispose()
 }

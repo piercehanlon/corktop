@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct Spatial {
     pub placing: bool,
     drag: Option<PinDrag>,
+    zone_origin: Option<(usize, Pos2)>,
     naming: Option<(Vec<usize>, String)>,
 }
 
@@ -55,17 +56,41 @@ impl Spatial {
         let mut format_zone = None;
         for (i, z) in geometry.zones.iter().enumerate() {
             let center = origin + offset(geometry.center(i)) * scale;
-            let label = ui.painter().text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                &z.title,
-                egui::FontId::proportional(18.0),
-                Color32::WHITE,
+            let text = ui.painter().layout_no_wrap(
+                z.title.clone(),
+                egui::FontId::proportional(17.),
+                Color32::from_gray(42),
             );
-            let response = ui.interact(
-                label.expand(4.0),
-                ui.id().with(("zone", i)),
-                Sense::click_and_drag(),
+            let label = Rect::from_center_size(center, text.size() + vec2(20., 10.));
+            let response = ui
+                .interact(label, ui.id().with(("zone", i)), Sense::click_and_drag())
+                .on_hover_cursor(egui::CursorIcon::Grab)
+                .on_hover_text("Drag to move the zone · Right-click for options");
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                self.zone_origin = ui
+                    .input(|input| input.pointer.press_origin())
+                    .map(|p| (i, p));
+            }
+            let delta = self
+                .zone_origin
+                .filter(|(idx, _)| *idx == i)
+                .and_then(|(_, start)| pointer.map(|p| p - start))
+                .unwrap_or_default();
+            if delta != Vec2::ZERO {
+                let mut ring: Vec<_> = z.pins.iter().map(|&n| points[n] + delta).collect();
+                ring.push(ring[0]);
+                ui.painter().add(egui::Shape::line(
+                    ring,
+                    egui::Stroke::new(2., Color32::from_rgb(255, 229, 177)),
+                ));
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+            ui.painter()
+                .rect_filled(label.translate(delta), 3., Color32::from_rgb(241, 225, 192));
+            ui.painter().galley(
+                center + delta - text.size() * 0.5,
+                text,
+                Color32::from_gray(42),
             );
             response.context_menu(|ui| {
                 if ui.button("Pack into folder").clicked() {
@@ -84,13 +109,9 @@ impl Spatial {
                     }
                 }
             });
-            if response.drag_stopped()
-                && let Some(delta) = ui.input(|i| {
-                    i.pointer
-                        .interact_pos()
-                        .zip(i.pointer.press_origin())
-                        .map(|(a, b)| a - b)
-                })
+            if response.drag_stopped_by(egui::PointerButton::Primary)
+                && self.zone_origin.take().is_some()
+                && delta != Vec2::ZERO
             {
                 moved_zone = Some((
                     i,
