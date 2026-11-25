@@ -93,12 +93,19 @@ impl Spatial {
                 ));
             }
         }
+        let mut remove_pin = None;
         for (id, &p) in points.iter().enumerate() {
             ui.interact(
                 Rect::from_center_size(p, vec2(22.0, 22.0)),
                 ui.id().with(("bare-tack", id)),
-                Sense::drag(),
-            );
+                Sense::click_and_drag(),
+            )
+            .context_menu(|ui| {
+                if ui.button("Remove Pin").clicked() {
+                    remove_pin = Some(id);
+                    ui.close();
+                }
+            });
             style.pin(ui.painter(), p);
             if ui.ui_contains_pointer()
                 && pointer.is_some_and(|at| at.distance(p) <= 11.0)
@@ -113,6 +120,12 @@ impl Spatial {
                 });
                 ui.ctx().request_repaint_after(Duration::from_millis(200));
             }
+        }
+        if let Some(id) = remove_pin {
+            self.drag = None;
+            board.remove_pin(id)?;
+            ui.ctx().request_repaint();
+            return Ok(());
         }
         if let Some(index) = pack_zone {
             board.pack_zone(index)?;

@@ -165,11 +165,15 @@ impl Geometry {
             .chain(self.anchors.iter().map(|a| a.pin))
             .chain(self.zones.iter().flat_map(|z| z.pins.iter().copied()))
             .collect();
+        self.retain_pins(|i| !zone.pins.contains(&i) || used.contains(&i));
+    }
+
+    pub(super) fn retain_pins(&mut self, keep: impl Fn(usize) -> bool) {
         let mut remap = vec![0; self.pins.len()];
         self.pins = std::mem::take(&mut self.pins)
             .into_iter()
             .enumerate()
-            .filter(|(i, _)| !zone.pins.contains(i) || used.contains(i))
+            .filter(|(i, _)| keep(*i))
             .enumerate()
             .map(|(new, (old, p))| {
                 remap[old] = new;
