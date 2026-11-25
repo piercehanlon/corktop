@@ -17,6 +17,8 @@ use std::{
 
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub(crate) use windows::tray_visibility;
 #[cfg(target_os = "linux")]
 mod x11;
 

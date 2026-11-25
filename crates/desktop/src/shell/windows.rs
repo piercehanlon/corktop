@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     io,
     ptr::{null, null_mut},
 };
@@ -6,6 +7,7 @@ use windows_sys::{
     Win32::{
         Foundation::{GetLastError, HWND, RECT, SetLastError},
         UI::{
+            Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::*,
         },
@@ -18,6 +20,129 @@ pub(super) struct Placement {
     extended: isize,
     rect: RECT,
     owner: HWND,
+}
+
+const REORDER: u32 = WM_APP + 0x4c2;
+
+#[derive(Clone, Copy)]
+struct Watch {
+    window: HWND,
+    host: HWND,
+    foreground: HWINEVENTHOOK,
+    minimize: HWINEVENTHOOK,
+    desktop_in_front: bool,
+    hidden: bool,
+}
+
+thread_local! {
+    static WATCH: Cell<Option<Watch>> = const {Cell::new(None)};
+}
+
+pub(crate) fn tray_visibility(visible: bool) {
+    if let Some(mut watch) = WATCH.get() {
+        watch.hidden = !visible;
+        WATCH.set(Some(watch));
+    }
+}
+
+unsafe extern "system" fn shell_event(
+    hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _: i32,
+    _: i32,
+    _: u32,
+    _: u32,
+) {
+    if let Some(w) = WATCH.get()
+        && ((event == EVENT_SYSTEM_FOREGROUND && hook == w.foreground)
+            || (event == EVENT_SYSTEM_MINIMIZESTART && hook == w.minimize && hwnd == w.window))
+    {
+        unsafe {
+            PostMessageW(w.window, REORDER, 0, 0);
+        }
+    }
+}
+
+fn start_watch(window: HWND, host: HWND) -> io::Result<()> {
+    unsafe {
+        let hook = |event| {
+            SetWinEventHook(
+                event,
+                event,
+                null_mut(),
+                Some(shell_event),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            )
+        };
+        let foreground = hook(EVENT_SYSTEM_FOREGROUND);
+        if foreground.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let minimize = hook(EVENT_SYSTEM_MINIMIZESTART);
+        if minimize.is_null() {
+            let error = io::Error::last_os_error();
+            UnhookWinEvent(foreground);
+            return Err(error);
+        }
+        WATCH.set(Some(Watch {
+            window,
+            host,
+            foreground,
+            minimize,
+            desktop_in_front: false,
+            hidden: false,
+        }));
+        PostMessageW(window, REORDER, 0, 0);
+        Ok(())
+    }
+}
+
+fn stop_watch() {
+    if let Some(w) = WATCH.take() {
+        unsafe {
+            UnhookWinEvent(w.foreground);
+            UnhookWinEvent(w.minimize);
+        }
+    }
+}
+
+fn follow_foreground() {
+    let Some(mut w) = WATCH.get() else { return };
+    if w.hidden {
+        return;
+    }
+    unsafe {
+        let fg = GetAncestor(GetForegroundWindow(), GA_ROOT);
+        if !fg.is_null() && fg != w.window {
+            w.desktop_in_front = fg == w.host || fg == GetShellWindow();
+            WATCH.set(Some(w));
+        }
+        if IsIconic(w.window) != 0 {
+            ShowWindow(w.window, SW_SHOWNOACTIVATE);
+        }
+        let level = if w.desktop_in_front {
+            HWND_TOP
+        } else {
+            HWND_BOTTOM
+        };
+        let flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSIZE | SWP_NOMOVE;
+        SetWindowPos(
+            w.window,
+            level,
+            0,
+            0,
+            0,
+            0,
+            if w.desktop_in_front {
+                flags | SWP_SHOWWINDOW
+            } else {
+                flags
+            },
+        );
+    }
 }
 
 unsafe extern "system" fn find_icon_host(window: HWND, output: isize) -> i32 {
@@ -59,8 +184,12 @@ unsafe extern "system" fn desktop_proc(
 ) -> isize {
     unsafe {
         match msg {
+            REORDER => {
+                follow_foreground();
+                return 0;
+            }
             WM_SYSCOMMAND if (wp as u32 & 0xfff0) == SC_MINIMIZE => return 0,
-            WM_SIZE if wp == SIZE_MINIMIZED as usize => {
+            WM_SIZE if wp == SIZE_MINIMIZED as usize && WATCH.get().is_some_and(|w| !w.hidden) => {
                 ShowWindowAsync(window, SW_SHOWNOACTIVATE);
             }
             WM_STYLECHANGING => {
@@ -75,12 +204,22 @@ unsafe extern "system" fn desktop_proc(
             }
             WM_WINDOWPOSCHANGING => {
                 let pos = &mut *(lp as *mut WINDOWPOS);
-                if pos.flags & SWP_NOZORDER == 0 {
-                    pos.hwndInsertAfter = HWND_BOTTOM;
-                    pos.flags |= SWP_NOOWNERZORDER;
+                if let Some(w) = WATCH.get() {
+                    if !w.hidden {
+                        pos.flags &= !SWP_HIDEWINDOW;
+                    }
+                    if pos.flags & SWP_NOZORDER == 0 {
+                        pos.hwndInsertAfter = if w.desktop_in_front {
+                            HWND_TOP
+                        } else {
+                            HWND_BOTTOM
+                        };
+                        pos.flags |= SWP_NOOWNERZORDER;
+                    }
                 }
             }
             WM_NCDESTROY => {
+                stop_watch();
                 RemoveWindowSubclass(window, Some(desktop_proc), id);
             }
             _ => {}
@@ -91,6 +230,7 @@ unsafe extern "system" fn desktop_proc(
 
 impl Placement {
     fn restore(&self, window: HWND) -> io::Result<()> {
+        stop_watch();
         unsafe {
             RemoveWindowSubclass(window, Some(desktop_proc), 2);
         }
@@ -161,6 +301,7 @@ pub(super) fn set(
                     "Could not install desktop placement handler",
                 ));
             }
+            start_watch(window, host)?;
             if SetWindowPos(
                 window,
                 HWND_BOTTOM,
