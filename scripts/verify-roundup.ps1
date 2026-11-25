@@ -1,5 +1,5 @@
 # The release ZIP embeds the two earlier checks into this single script.
-param([switch]$ResumeRoundup, [switch]$ResumeAfterExplorer, [string]$ResumeBoard, [switch]$ResumeDesktop)
+param([switch]$ResumeRoundup, [switch]$ResumeAfterExplorer, [string]$ResumeBoard, [switch]$ResumeDesktop, [string]$PriorBoard)
 if ($ResumeDesktop -and !$ResumeBoard) { throw "Supply the retained Case board with -ResumeBoard when using -ResumeDesktop" }
 if ($ResumeBoard) { $ResumeAfterExplorer = $true }
 if ($ResumeAfterExplorer) { $ResumeRoundup = $true }
@@ -135,16 +135,45 @@ try {
             if ($afterZone[$i].id -ne $beforeZone[$i].id -or $afterZone[$i].x-$beforeZone[$i].x -ne $dx -or $afterZone[$i].y-$beforeZone[$i].y -ne $dy) { throw 'Zone tacks moved by different distances' }
         }
     }
-    function Read-TackCounts {
-        $toml = [IO.File]::ReadAllText($manifest)
-        $pins = [regex]::Match($toml,'(?ms)^\[geometry\]\s*.*?^pins\s*=\s*\[((?:\s*\[\s*\d+\s*,\s*\d+\s*\]\s*,?)+)\s*\]').Groups[1].Value
-        if (!$pins) { throw 'Missing tack coordinates' }
-        '{0},{1},{2}' -f [regex]::Matches($pins,'\[').Count,[regex]::Matches($toml,'(?m)^\[\[geometry\.dividers\]\]').Count,[regex]::Matches($toml,'(?m)^\[\[geometry\.anchors\]\]').Count
+    function Read-MoveSnapshot($stage, $folder) {
+        $json = (& $exe --inspect-layout $folder | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or !$json) { throw "Could not inspect the board in $folder" }
+        [IO.File]::WriteAllText((Join-Path $root "move-$stage.json"),$json,$utf8)
+        $layout = $json | ConvertFrom-Json
+        $g = $layout.geometry
+        Write-Host ("{0}: {1} tacks, {2} tack-to-tack strands, {3} card-to-tack strands, {4} card-to-card strands" -f $stage,$g.pins.Count,$g.dividers.Count,$g.anchors.Count,$layout.strings.Count)
+        Write-Host ("Saved tack positions: " + (ConvertTo-Json -InputObject $g.pins -Depth 4 -Compress))
+        return $layout
     }
-    $counts = Read-TackCounts
-    Confirm-Step 'Right-click a bare tack and choose Move tack. Place it, move the pointer away, then click blank cork. Did only the original tack move, with no trailing strand?'
-    if ((Read-TackCounts) -ne $counts) { throw 'Moving a tack changed the tack or strand count' }
-    Confirm-Step 'Double-click empty top bar space to maximize, then double-click it again. Did the window return to its previous size and position?'
+    if ($PriorBoard -and $ResumeBoard) {
+        if (Test-Path -LiteralPath (Join-Path $PriorBoard '.board.toml')) {
+            Write-Host 'Comparing the retained source and result from the previous run.'
+            $prior = Read-MoveSnapshot 'retained-source' $PriorBoard
+            $result = Read-MoveSnapshot 'retained-result' $ResumeBoard
+            foreach ($field in 'dividers','anchors','zones') {
+                $old = ConvertTo-Json -InputObject $prior.geometry.$field -Depth 8 -Compress
+                $new = ConvertTo-Json -InputObject $result.geometry.$field -Depth 8 -Compress
+                if ($old -cne $new) { Write-Host "Retained $field changed from $old to $new" }
+            }
+        } else { Write-Host "Earlier board unavailable at $PriorBoard. Continuing with the copied board." }
+    }
+    $before = Read-MoveSnapshot 'before' $board
+    Confirm-Step 'Right-click one existing bare tack, choose Move tack, then click a different location. Move the pointer away and click blank cork. Did only the original tack move?'
+    $after = Read-MoveSnapshot 'after' $board
+    if ($before.geometry.pins.Count -ne $after.geometry.pins.Count) { throw "Tack count changed. Compare move-before.json and move-after.json under $root" }
+    $moved = 0
+    for ($i = 0; $i -lt $before.geometry.pins.Count; $i++) {
+        if ($before.geometry.pins[$i][0] -ne $after.geometry.pins[$i][0] -or $before.geometry.pins[$i][1] -ne $after.geometry.pins[$i][1]) { $moved++ }
+    }
+    if ($moved -ne 1) { throw "Expected one saved tack to move; found $moved. Snapshots retained under $root" }
+    foreach ($field in 'dividers','anchors','zones') {
+        $old = ConvertTo-Json -InputObject @($before.geometry.$field | Where-Object { $null -ne $_ }) -Depth 8 -Compress
+        $new = ConvertTo-Json -InputObject @($after.geometry.$field | Where-Object { $null -ne $_ }) -Depth 8 -Compress
+        if ($old -cne $new) { throw "Saved $field changed from $old to $new" }
+    }
+    if ((ConvertTo-Json -InputObject $before.strings -Depth 8 -Compress) -cne (ConvertTo-Json -InputObject $after.strings -Depth 8 -Compress)) { throw "Card-to-card strings changed. Snapshots retained under $root" }
+    Confirm-Step 'Double-click empty top bar space to maximize. Did the window maximize?'
+    Confirm-Step 'Double-click empty top bar space again. Did the window return to its previous size and position?'
     Confirm-Step 'In Settings > Board, does the folder show a normal drive or network-share path?'
     Confirm-Step 'Shrink the window until an item is off-screen. Click a numbered arrow to reveal it. Click Refit, then Ctrl+Z. Did the item return to its saved board position?'
     $desktop = Read-Host 'Enable Desktop layer in Settings > Behavior. Press Win+D and try clicking a card. Enter attached if the board is interactive, fallback if corktop reports that the host is unavailable, or failed for any other result'
