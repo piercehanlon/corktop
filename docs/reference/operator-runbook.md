@@ -29,6 +29,16 @@ rustup target add x86_64-pc-windows-gnu
 python3 scripts/release.py --windows-zip target/packages
 ```
 
+For v1.0, use the single Windows roundup. Compare the ZIP SHA-256 with the private release checksum before extracting. The executable is unsigned. Windows application control can block its launch. Record a block as a launch result. The script uses disposable boards and an isolated app profile and exercises the clipboard. From the extracted folder run:
+
+```powershell
+.\verify-roundup.ps1
+```
+
+The direct GitHub artifact, version and commit in the receipt must match the Linux installation. The final JSON records native observations, including whether Explorer supplied the desktop layer or the app fell back to its standard window. Keep raw results local.
+
+### Historical Pilot packages
+
 On Windows, extract the entire ZIP under a user-owned directory, keeping its versioned folder. Double-click corktop.exe to open a board folder. The verifier launches the version screen with `--version-window`. To collect Gate 2 evidence, open PowerShell in the extracted folder and run:
 
 ```powershell
