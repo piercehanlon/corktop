@@ -181,6 +181,24 @@ fn board_window(path: Option<std::ffi::OsString>, mode: Option<bool>, panel: boo
         let creator: eframe::AppCreator = Box::new(move |cc| {
             #[cfg(windows)]
             {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                let handle = cc.window_handle()?;
+                if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                    let hwnd = h.hwnd.get();
+                    if !shell::window_controls::attach(hwnd, &window, &cc.egui_ctx) {
+                        return Err(std::io::Error::other(
+                            "Could not attach Windows control handler",
+                        )
+                        .into());
+                    }
+                    window.borrow_mut().hwnd = hwnd;
+                    if let Some(control) = &window.borrow().control {
+                        control
+                            .sender
+                            .hwnd
+                            .store(hwnd, std::sync::atomic::Ordering::Release);
+                    }
+                }
                 let millis = unsafe {
                     windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime()
                 };

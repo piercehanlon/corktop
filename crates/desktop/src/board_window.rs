@@ -78,6 +78,8 @@ struct Canvas {
 pub struct BoardWindow {
     pub control: Option<crate::shell::control::Control>,
     pub panel: bool,
+    #[cfg(windows)]
+    pub hwnd: isize,
     placard: placard::Placard,
     materials: material::Materials,
     fonts_dirty: bool,
@@ -170,20 +172,56 @@ impl BoardWindow {
         true
     }
 
+    fn set_visible(&mut self, ctx: &egui::Context, visible: bool) {
+        self.hidden = !visible;
+        #[cfg(windows)]
+        if self.hwnd != 0 {
+            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+            unsafe {
+                let window = self.hwnd as _;
+                ShowWindow(
+                    window,
+                    if !visible {
+                        SW_HIDE
+                    } else if IsIconic(window) != 0 {
+                        SW_RESTORE
+                    } else {
+                        SW_SHOW
+                    },
+                );
+                if visible {
+                    SetForegroundWindow(window);
+                }
+            }
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(visible));
+        if visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
+    fn control_layer(&mut self, mode: bool) {
+        self.machine.desktop = mode;
+        #[cfg(windows)]
+        if let Err(error) = self.layer.set_windows(self.hwnd, mode) {
+            self.machine.desktop = self.layer.active;
+            self.error = error.to_string();
+        }
+    }
+
     fn apply_control(&mut self, ctx: &egui::Context, event: crate::shell::control::Action) {
         use crate::shell::control::{Action, Launch};
         match event {
             Action::Launch(Launch::Open { path, desktop }) => {
                 if let Some(mode) = desktop {
-                    self.machine.desktop = mode;
+                    self.control_layer(mode);
                 }
                 if let Some(path) = path {
                     self.switch_folder(&path);
                 }
-                self.hidden = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.set_visible(ctx, true);
             }
             Action::Chosen(path) => {
                 self.picker_open = false;
@@ -195,15 +233,21 @@ impl BoardWindow {
                 self.error = message;
             }
             Action::ToggleVisible => {
-                self.hidden =
+                #[cfg(windows)]
+                let visible = unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                    IsWindowVisible(self.hwnd as _) != 0 && IsIconic(self.hwnd as _) == 0
+                };
+                #[cfg(not(windows))]
+                let visible =
                     !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!self.hidden));
-                if !self.hidden {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
+                self.set_visible(ctx, !visible);
             }
-            Action::ToggleLayer => self.machine.desktop = !self.machine.desktop,
+            Action::ToggleLayer => {
+                self.control_layer(!self.machine.desktop);
+                #[cfg(windows)]
+                self.set_visible(ctx, true);
+            }
             Action::ChooseFolder => self.choose(),
             Action::Panel => {
                 if let Err(e) = std::env::current_exe()
@@ -214,12 +258,19 @@ impl BoardWindow {
             }
             Action::Settings => {
                 self.showing_settings = true;
-                self.hidden = false;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.set_visible(ctx, true);
             }
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::Quit => {
+                #[cfg(windows)]
+                unsafe {
+                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                    if IsWindowVisible(self.hwnd as _) == 0 || IsIconic(self.hwnd as _) != 0 {
+                        // eframe processes its close request during a drawable frame.
+                        ShowWindow(self.hwnd as _, SW_SHOWNOACTIVATE);
+                    }
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 

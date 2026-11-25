@@ -119,6 +119,7 @@ mod native {
                                 "Switch folder...",
                                 "New panel",
                                 "Settings",
+                                "Return to standard window",
                                 "Quit",
                             ]
                             .iter()
@@ -147,7 +148,11 @@ mod native {
                                 3 => Action::ChooseFolder,
                                 4 => Action::Panel,
                                 5 => Action::Settings,
-                                6 => Action::Quit,
+                                6 => Action::Launch(crate::shell::control::Launch::Open {
+                                    path: None,
+                                    desktop: Some(false),
+                                }),
+                                7 => Action::Quit,
                                 _ => return 0,
                             };
                             d.sender.send(action);
