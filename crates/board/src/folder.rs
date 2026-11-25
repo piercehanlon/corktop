@@ -474,11 +474,7 @@ impl Board {
         {
             Some("url") => Ok(PathBuf::from(bookmark(&path)?.as_str())),
             Some("corklink") => {
-                let target = PathBuf::from(read_text(&path, NOTE_LIMIT as u64)?);
-                if !target.is_absolute() || !target.symlink_metadata()?.is_file() {
-                    return Err(invalid("linked file unavailable"));
-                }
-                Ok(target)
+                crate::export::resolve_link(&self.root, &read_text(&path, NOTE_LIMIT as u64)?)
             }
             _ => Ok(path),
         }

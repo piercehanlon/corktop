@@ -45,12 +45,66 @@ impl BoardWindow {
             });
         self.showing_settings &= show;
     }
+    pub(super) fn export_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.export else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("Export board")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Destination folder");
+                ui.text_edit_singleline(&mut dialog.parent);
+                ui.checkbox(&mut dialog.include, "Include copies of linked files");
+                egui::ScrollArea::vertical()
+                    .max_height(220.)
+                    .show(ui, |ui| {
+                        for item in dialog.plan.contents(dialog.include) {
+                            ui.label(item);
+                        }
+                    });
+                if ui.button("Create portable folder").clicked() {
+                    dialog.message = match dialog
+                        .plan
+                        .write(std::path::Path::new(&dialog.parent), dialog.include)
+                    {
+                        Ok(path) => format!("Exported to {}", crate::shell::display_path(&path)),
+                        Err(err) => err.to_string(),
+                    };
+                }
+                ui.label(&dialog.message);
+            });
+        if !open {
+            self.export = None;
+        }
+    }
+
     fn settings_board(&mut self, ui: &mut egui::Ui) {
         ui.strong("Board folder");
         if let Some(canvas) = &self.canvas {
             ui.label(crate::shell::display_path(canvas.board.root()));
         }
         ui.horizontal_wrapped(|ui| {
+            if ui.button("Export board…").clicked()
+                && let Some(canvas) = &self.canvas
+            {
+                let root = canvas.board.root();
+                match corktop_board::ExportPlan::preview(root) {
+                    Ok(plan) => {
+                        self.export = Some(ExportDialog {
+                            plan,
+                            include: false,
+                            parent: root
+                                .parent()
+                                .map(crate::shell::display_path)
+                                .unwrap_or_default(),
+                            message: String::new(),
+                        });
+                        self.showing_settings = false;
+                    }
+                    Err(err) => self.error = err.to_string(),
+                }
+            }
             if ui.button("Switch folder…").clicked() {
                 self.choose();
             }
@@ -216,4 +270,11 @@ impl BoardWindow {
             }
         }
     }
+}
+
+pub(super) struct ExportDialog {
+    plan: corktop_board::ExportPlan,
+    include: bool,
+    parent: String,
+    message: String,
 }

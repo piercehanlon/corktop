@@ -4,33 +4,35 @@ corktop turns a folder into a desktop corkboard. Pin notes, screenshots, links, 
 
 | Write and save a note | Connect two cards |
 | --- | --- |
-| [![Typing a Markdown note on the board and saving it as a card](docs/media/write-a-note.gif)](docs/media/write-a-note.mp4) | [![Dragging yarn from one card’s pinhead to another card](docs/media/connect-cards.gif)](docs/media/connect-cards.mp4) |
+| [![Typing a Markdown note on the board and saving it as a card](media/write-a-note.gif)](media/write-a-note.mp4) | [![Dragging yarn from one card’s pinhead to another card](media/connect-cards.gif)](media/connect-cards.mp4) |
+| **Copy and paste a card** | **Drop a file on the Blueprint board** |
+| [![Copying and pasting a note](media/copy-and-paste.gif)](media/copy-and-paste.mp4) | [![Dragging a file from a folder onto the Blueprint board](media/drop-a-file.gif)](media/drop-a-file.mp4) |
 
 ## Download
 
-| Platform | 1.0.0 RC11 | To launch |
+| Platform | 1.0.0 RC12 | To launch |
 | --- | --- | --- |
-| Windows x64 | [Download ZIP](https://github.com/piercehanlon/corktop/releases/download/v1.0.0-rc.11/corktop-1.0.0-windows-x64-136357cad479.zip) | Extract the folder and open `corktop.exe`. The executable is unsigned. |
-| Linux x86-64 | [Download tar.gz](https://github.com/piercehanlon/corktop/releases/download/v1.0.0-rc.11/corktop-1.0.0-linux-x64-136357cad479.tar.gz) | Extract the folder and run `./corktop` inside it. This build requires glibc 2.43 or later, libxkbcommon, and an OpenGL-capable X11 or Wayland session. |
+| Windows x64 | [Download ZIP](https://github.com/piercehanlon/corktop/releases/download/v1.0.0-rc.12/corktop-1.0.0-windows-x64.zip) | Extract the folder and open `corktop.exe`. The executable is unsigned. Windows SmartScreen or Smart App Control may warn or block it. [Build from source](#build-from-source). |
+| Linux x86-64 | [Download tar.gz](https://github.com/piercehanlon/corktop/releases/download/v1.0.0-rc.12/corktop-1.0.0-linux-x64.tar.gz) | Extract the folder and run `./corktop` inside it. This build requires glibc 2.35 or later, libxkbcommon, and an OpenGL-capable X11 or Wayland session. |
 
-The release includes SHA-256 checksums for both downloads. If your Linux distribution has an older glibc, build from source using the instructions below. [Release notes and checksums](https://github.com/piercehanlon/corktop/releases/tag/v1.0.0-rc.11)
+The release includes SHA-256 checksums for both downloads. If your Linux distribution has an older glibc, build from source using the instructions below. [Release notes and checksums](https://github.com/piercehanlon/corktop/releases/tag/v1.0.0-rc.12)
 
 ## Make your first board
 
-1. Choose **Browse** on first launch and select a folder. Start with an empty one, or choose **Inbox** during setup to pick which existing files to pin.
+1. Step through the quick tutorial, then choose **Browse** and select a folder. Start with an empty one, or choose **Inbox** during setup to pick which existing files to pin.
 2. Double-click blank cork to write a note. Put the title on the first line and press **Ctrl+Enter** to save. You can also click blank cork and paste text, a screenshot, or a URL with **Ctrl+V**.
 3. Drag a file from your file manager onto the board. Drops default to **Copy**. Choose **Ask**, **Copy**, **Link**, or **Move** in Settings.
 4. Drag a card by its body to move it. Drag its pinhead onto another card to connect them. Right-click a strand to cut it.
 
 Click a text card to copy its contents. Double-click to open its file in your editor. For more gestures, open **Settings → Help → Replay tutorial**.
 
-![The four tutorial cards explain copying, pasting and dropping files, pulling yarn, and marking a zone.](docs/media/tutorial.png)
+![The four tutorial cards explain copying, pasting and dropping files, pulling yarn, and marking a zone.](media/tutorial.png)
 
 ## Where your work lives
 
-![Four notes on the North Point light board. Red yarn connects the station log to a maintenance slip and a tide table.](docs/media/north-point-board.png)
+![Four notes on the North Point light board. Red yarn connects the station log to a maintenance slip and a tide table.](media/north-point-board.png)
 
-The board folder holds your files. The hidden `.board.toml` file records card positions, strings, and zones. To back up a board, copy the whole folder, including hidden files. Cards added with **Link** still depend on their original files. To keep a file with the board, use **Copy**.
+The board folder holds your files. The hidden `.board.toml` file records card positions, strings, and zones. Open **Settings → Board → Export board** to create a portable folder. Review the file list, pick a destination outside the board, and enable **Include copies of linked files** to bring their contents. Without it, external links retain their original paths. Copy the entire exported folder, including hidden files, to the other computer and choose it in Browse.
 
 ## Build from source
 
@@ -63,7 +65,17 @@ export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc-posix
 cargo build --release --locked -p corktop --target x86_64-pc-windows-gnu
 ```
 
-The executable is `target/x86_64-pc-windows-gnu/release/corktop.exe`. The release runbook covers packaging it with its license notices. [Release runbook](docs/reference/operator-runbook.md)
+The executable is `target/x86_64-pc-windows-gnu/release/corktop.exe`. 
+
+### Package a release
+
+On x86-64 Linux, install Python 3.11+, bubblewrap (with user namespaces enabled), curl, the Rust documentation component, and the MinGW tool versions in [tools.lock.toml](tools.lock.toml). From a clean checkout with the Windows GNU Rust target installed, run:
+
+```sh
+python3 scripts/release.py --packages target/downloads
+```
+
+The command builds Linux in Ubuntu 22.04, launches the extracted archive in a fresh Ubuntu 22.04 userspace, cross-builds Windows, and writes both archives with their notices and a shared `SHA256SUMS` file.
 
 ## License
 

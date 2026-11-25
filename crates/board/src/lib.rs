@@ -1,4 +1,6 @@
 //! Folder boards and the disposable installation probe.
+mod export;
+pub use export::ExportPlan;
 mod folder;
 mod preferences;
 pub use folder::{Board, Card, ListEntry};

@@ -27,7 +27,7 @@ rustc-ice-*.txt
 !.env.example
 *.tfstate
 *.tfstate.*
-/docs/internal/
+/docs/
 /arch/
 /.tmp/
 /.run/

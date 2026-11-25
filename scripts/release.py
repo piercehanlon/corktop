@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 import zipfile
@@ -45,8 +46,14 @@ def notices(dest, target):
 
 
 def build(sha, target, exe, env=None):
-    if output("git", "status", "--porcelain") or sha != output("git", "rev-parse", "origin/main"):
-        raise SystemExit("Install requires a clean checkout at the fetched origin/main")
+    env = dict(env or os.environ)
+    cargo_home = Path(env.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
+    flags = [f"--remap-path-prefix={cargo_home}=/rust-dependencies",
+             f"--remap-path-prefix={Path.cwd()}=/corktop",
+             f"--remap-path-prefix={output('rustc', '--print', 'sysroot')}=/rust"]
+    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
+    if output("git", "status", "--porcelain"):
+        raise SystemExit("Packaging requires a clean checkout")
     versions = tomllib.loads(Path("tools.lock.toml").read_text())["versions"]
     for tool in ("cargo", "rustc"):
         if output(tool, "--version").split()[1] != versions[tool]:
@@ -76,7 +83,7 @@ def windows_zip(dest, sha):
         raise SystemExit(f"Check Windows runtime DLLs: {imports}")
     version = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
     receipt = dict(version=version, commit=sha, target=target, sha256=digest(binary))
-    name = f"corktop-{version}-windows-x64-{sha[:12]}"
+    name = f"corktop-{version}-windows-x64"
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=dest) as scratch:
         stage = Path(scratch) / name
@@ -86,11 +93,6 @@ def windows_zip(dest, sha):
         tool_prefix = Path(shutil.which(gcc)).resolve().parents[1]
         for package in ("gcc-mingw-w64-base", "mingw-w64-common"):
             shutil.copy(tool_prefix / "share/doc" / package / "copyright", stage / (package + "-copyright.txt"))
-        roundup = Path("scripts/verify-roundup.ps1").read_text()
-        for verifier in ("verify-windows.ps1", "verify-everyday.ps1"):
-            roundup = roundup.replace(f"& (Join-Path $PSScriptRoot '{verifier}')",
-                                      Path("scripts", verifier).read_text())
-        (stage / "verify-roundup.ps1").write_text(roundup, encoding="utf-8-sig")
         (stage / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
         archive = Path(scratch) / (name + ".zip")
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
@@ -102,6 +104,35 @@ def windows_zip(dest, sha):
                 raise SystemExit("Windows ZIP integrity check failed")
         archive.replace(dest / archive.name)
     print(json.dumps(dict(**receipt, zip=name + ".zip", zip_sha256=digest(dest / (name + ".zip")))))
+
+
+def packages(dest, sha):
+    if platform.system() != "Linux" or output("git", "status", "--porcelain"):
+        raise SystemExit("Use a clean Linux checkout")
+    target = "x86_64-unknown-linux-gnu"
+    dest.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest) as tmp:
+        work = Path(tmp)
+        subprocess.run(["bash", "scripts/jammy-release.sh", "build"], check=True)
+        binary = Path("target/release-jammy/target") / target / "release/corktop"
+        identity = json.loads(output(binary, "--identity"))
+        if identity["commit"] != sha or identity["target"] != target:
+            raise SystemExit("Linux release identity mismatch")
+        stage = work / f"corktop-{identity['version']}-linux-x64"
+        stage.mkdir()
+        shutil.copy2(binary, stage / "corktop")
+        notices(stage, target)
+        (stage / "build.json").write_text(json.dumps(dict(**identity, sha256=digest(binary)), indent=2) + "\n")
+        archive = work / (stage.name + ".tar.gz")
+        with tarfile.open(archive, "w:gz") as bundle:
+            bundle.add(stage, arcname=stage.name)
+        subprocess.run(["bash", "scripts/jammy-release.sh", "smoke", archive], check=True)
+        windows_zip(work, sha)
+        files = [archive, *work.glob("*.zip")]
+        sums = work / "SHA256SUMS"
+        sums.write_text("".join(f"{digest(path)}  {path.name}\n" for path in files))
+        for path in [*files, sums]:
+            path.replace(dest / path.name)
 
 
 def install(dest, sha, target):
@@ -185,9 +216,13 @@ if __name__ == "__main__":
     action.add_argument("--install", type=Path, metavar="VERSION_DIRECTORY")
     action.add_argument("--verify", type=Path, metavar="INSTALLED_BINARY")
     action.add_argument("--windows-zip", type=Path, metavar="OUTPUT_DIRECTORY")
+    action.add_argument("--packages", type=Path, metavar="OUTPUT_DIRECTORY")
     args = parser.parse_args()
     exe = "corktop.exe" if os.name == "nt" else "corktop"
     sha = output("git", "rev-parse", "HEAD")
+    if args.packages:
+        packages(args.packages.resolve(), sha)
+        raise SystemExit(0)
     if sha != output("git", "rev-parse", "origin/main"):
         raise SystemExit("Check out the fetched main revision")
     if args.windows_zip:

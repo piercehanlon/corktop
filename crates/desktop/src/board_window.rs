@@ -91,6 +91,7 @@ pub struct BoardWindow {
     #[cfg(windows)]
     tray: Option<crate::shell::tray::Handle>,
     showing_settings: bool,
+    export: Option<settings::ExportDialog>,
     settings_tab: SettingsTab,
     show_bin: bool,
     setup: onboarding::Setup,
@@ -584,6 +585,7 @@ impl BoardWindow {
         if self.showing_settings {
             self.settings(ctx);
         }
+        self.export_dialog(ctx);
         let panel = egui::CentralPanel::default();
         let panel = if self.canvas.is_some() && self.occupied.is_none() {
             panel.frame(egui::Frame::NONE)
