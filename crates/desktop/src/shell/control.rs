@@ -34,12 +34,18 @@ pub enum Action {
 #[derive(Clone)]
 pub struct Sender {
     tx: mpsc::Sender<Action>,
+    #[cfg(windows)]
+    pub hwnd: Arc<std::sync::atomic::AtomicIsize>,
     context: Arc<Mutex<Option<eframe::egui::Context>>>,
 }
 impl Sender {
     pub fn send(&self, a: Action) {
-        if self.tx.send(a).is_ok()
-            && let Ok(ctx) = self.context.lock()
+        if self.tx.send(a).is_err() {
+            return;
+        }
+        #[cfg(windows)]
+        super::window_controls::wake(self.hwnd.load(std::sync::atomic::Ordering::Acquire));
+        if let Ok(ctx) = self.context.lock()
             && let Some(ctx) = ctx.as_ref()
         {
             ctx.request_repaint();
@@ -57,6 +63,8 @@ impl Control {
         Self {
             sender: Sender {
                 tx,
+                #[cfg(windows)]
+                hwnd: Default::default(),
                 context: Default::default(),
             },
             rx,
@@ -76,11 +84,36 @@ impl Control {
 }
 
 fn read_message(stream: &mut Stream) -> io::Result<Vec<u8>> {
+    #[cfg(not(windows))]
     stream.set_nonblocking(true)?;
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut message = Vec::new();
     let mut chunk = [0; 1024];
     while Instant::now() < deadline {
+        #[cfg(windows)]
+        {
+            let Stream::NamedPipe(pipe) = &*stream;
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+            let mut available = 0;
+            if unsafe {
+                PeekNamedPipe(
+                    pipe.inner().as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if available == 0 {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+        }
         match stream.read(&mut chunk) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(n) => {
@@ -89,6 +122,7 @@ fn read_message(stream: &mut Stream) -> io::Result<Vec<u8>> {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
                 if message.ends_with(b"\n") {
+                    #[cfg(not(windows))]
                     stream.set_nonblocking(false)?;
                     return Ok(message);
                 }

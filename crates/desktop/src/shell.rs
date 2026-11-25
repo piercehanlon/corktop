@@ -4,6 +4,8 @@ pub mod control;
 pub mod login;
 pub mod picker;
 pub mod tray;
+#[cfg(windows)]
+pub mod window_controls;
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde::{Deserialize, Serialize};
@@ -130,6 +132,15 @@ pub struct Layer {
 }
 
 impl Layer {
+    #[cfg(windows)]
+    pub fn set_windows(&mut self, hwnd: isize, desktop: bool) -> io::Result<()> {
+        if self.active != desktop {
+            windows::set(hwnd, desktop, &mut self.original)?;
+            self.active = desktop;
+        }
+        Ok(())
+    }
+
     pub fn set(&mut self, frame: &eframe::Frame, desktop: bool) -> io::Result<()> {
         if desktop == self.active {
             return Ok(());
@@ -141,7 +152,7 @@ impl Layer {
             #[cfg(target_os = "linux")]
             RawWindowHandle::Xcb(h) => x11::set(h.window.get(), desktop)?,
             #[cfg(windows)]
-            RawWindowHandle::Win32(h) => windows::set(h.hwnd.get(), desktop, &mut self.original)?,
+            RawWindowHandle::Win32(h) => self.set_windows(h.hwnd.get(), desktop)?,
             _ => {
                 return Err(io::Error::other(
                     "Desktop layer unavailable on this compositor. Standard window is active.",

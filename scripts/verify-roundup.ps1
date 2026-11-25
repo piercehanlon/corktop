@@ -1,5 +1,6 @@
 # The release ZIP embeds the two earlier checks into this single script.
-param([switch]$ResumeRoundup, [switch]$ResumeAfterExplorer, [string]$ResumeBoard, [switch]$ResumeDesktop, [string]$PriorBoard)
+param([switch]$ResumeRoundup, [switch]$ResumeAfterExplorer, [string]$ResumeBoard, [switch]$ResumeDesktop, [string]$PriorBoard, [switch]$ResumeShell)
+if ($ResumeShell) { $ResumeDesktop = $true }
 if ($ResumeDesktop -and !$ResumeBoard) { throw "Supply the retained Case board with -ResumeBoard when using -ResumeDesktop" }
 if ($ResumeBoard) { $ResumeAfterExplorer = $true }
 if ($ResumeAfterExplorer) { $ResumeRoundup = $true }
@@ -147,45 +148,88 @@ try {
         Write-Host ("Saved tack positions: " + (ConvertTo-Json -InputObject $g.pins -Depth 4 -Compress))
         return $layout
     }
-    if ($PriorBoard -and $ResumeBoard) {
-        if (Test-Path -LiteralPath (Join-Path $PriorBoard '.board.toml')) {
-            Write-Host 'Comparing the retained source and result from the previous run.'
-            $prior = Read-MoveSnapshot 'retained-source' $PriorBoard
-            $result = Read-MoveSnapshot 'retained-result' $ResumeBoard
-            foreach ($field in 'dividers','anchors','zones') {
-                $old = ConvertTo-Json -InputObject $prior.geometry.$field -Depth 8 -Compress
-                $new = ConvertTo-Json -InputObject $result.geometry.$field -Depth 8 -Compress
-                if ($old -cne $new) { Write-Host "Retained $field changed from $old to $new" }
+    if (!$ResumeShell) {
+        if ($PriorBoard -and $ResumeBoard) {
+            if (Test-Path -LiteralPath (Join-Path $PriorBoard '.board.toml')) {
+                Write-Host 'Comparing the retained source and result from the previous run.'
+                $prior = Read-MoveSnapshot 'retained-source' $PriorBoard
+                $result = Read-MoveSnapshot 'retained-result' $ResumeBoard
+                foreach ($field in 'dividers','anchors','zones') {
+                    $old = ConvertTo-Json -InputObject $prior.geometry.$field -Depth 8 -Compress
+                    $new = ConvertTo-Json -InputObject $result.geometry.$field -Depth 8 -Compress
+                    if ($old -cne $new) { Write-Host "Retained $field changed from $old to $new" }
+                }
+            } else { Write-Host "Earlier board unavailable at $PriorBoard. Continuing with the copied board." }
+        }
+        $before = Read-MoveSnapshot 'before' $board
+        Confirm-Step 'Right-click one existing bare tack, choose Move tack, then left-click a different location to set it down. Did that tack move?'
+        $after = Read-MoveSnapshot 'placed' $board
+        if ($before.geometry.pins.Count -ne $after.geometry.pins.Count) { throw "Tack count changed. Compare move-before.json and move-placed.json under $root" }
+        $moved = 0
+        for ($i = 0; $i -lt $before.geometry.pins.Count; $i++) {
+            if ($before.geometry.pins[$i][0] -ne $after.geometry.pins[$i][0] -or $before.geometry.pins[$i][1] -ne $after.geometry.pins[$i][1]) { $moved++ }
+        }
+        if ($moved -ne 1) { throw "Expected one saved tack to move; found $moved. Snapshots retained under $root" }
+        foreach ($field in 'dividers','anchors','zones') {
+            $old = ConvertTo-Json -InputObject @($before.geometry.$field | Where-Object { $null -ne $_ }) -Depth 8 -Compress
+            $new = ConvertTo-Json -InputObject @($after.geometry.$field | Where-Object { $null -ne $_ }) -Depth 8 -Compress
+            if ($old -cne $new) { throw "Saved $field changed from $old to $new" }
+        }
+        if ((ConvertTo-Json -InputObject $before.strings -Depth 8 -Compress) -cne (ConvertTo-Json -InputObject $after.strings -Depth 8 -Compress)) { throw "Card-to-card strings changed. Snapshots retained under $root" }
+        Confirm-Step 'Now single-click blank cork once. Did it stay empty?'
+        $blank = Read-MoveSnapshot 'after' $board
+        if ((ConvertTo-Json $blank -Depth 12 -Compress) -cne (ConvertTo-Json $after -Depth 12 -Compress)) {
+            throw "Blank click changed the saved layout. Compare move-placed.json and move-after.json under $root"
+        }
+        Confirm-Step 'Double-click empty top bar space to maximize. Did the window maximize?'
+        Confirm-Step 'Double-click empty top bar space again. Did the window return to its previous size and position?'
+        Confirm-Step 'In Settings > Board, does the folder show a normal drive or network-share path?'
+        Confirm-Step 'Shrink the window until an item is off-screen. Click a numbered arrow to reveal it. Click Refit, then Ctrl+Z. Did the item return to its saved board position?'
+    }
+    function Write-ShellState($stage) {
+        try {
+            if (!('CorktopWindowProbe' -as [type])) {
+                Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class CorktopWindowProbe {
+    delegate bool Visit(IntPtr window, IntPtr data);
+    [DllImport("user32")] static extern bool EnumWindows(Visit visit, IntPtr data);
+    [DllImport("user32")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    [DllImport("user32", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder title, int length);
+    [DllImport("user32")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32")] static extern bool IsIconic(IntPtr window);
+    [DllImport("user32")] static extern IntPtr GetWindow(IntPtr window, uint command);
+    public static string Read(uint pid) {
+        string result = "main window absent from top-level windows";
+        EnumWindows(delegate(IntPtr w, IntPtr data) {
+            uint ownerPid;
+            GetWindowThreadProcessId(w, out ownerPid);
+            if (ownerPid != pid) return true;
+            var title = new StringBuilder(64);
+            GetWindowText(w, title, title.Capacity);
+            if (title.ToString() != "corktop") return true;
+            result = String.Format("visible={0} minimized={1} owned={2}", IsWindowVisible(w), IsIconic(w), GetWindow(w, 4) != IntPtr.Zero);
+            return false;
+        }, IntPtr.Zero);
+        return result;
+    }
+}
+'@
             }
-        } else { Write-Host "Earlier board unavailable at $PriorBoard. Continuing with the copied board." }
+            $line = "$stage $([CorktopWindowProbe]::Read($app.Id))"
+            Write-Host $line
+            Add-Content -LiteralPath (Join-Path $root 'desktop-state.txt') -Value $line
+        } catch { Write-Host "Window-state probe unavailable ($stage): $_" }
     }
-    $before = Read-MoveSnapshot 'before' $board
-    Confirm-Step 'Right-click one existing bare tack, choose Move tack, then left-click a different location to set it down. Did that tack move?'
-    $after = Read-MoveSnapshot 'placed' $board
-    if ($before.geometry.pins.Count -ne $after.geometry.pins.Count) { throw "Tack count changed. Compare move-before.json and move-placed.json under $root" }
-    $moved = 0
-    for ($i = 0; $i -lt $before.geometry.pins.Count; $i++) {
-        if ($before.geometry.pins[$i][0] -ne $after.geometry.pins[$i][0] -or $before.geometry.pins[$i][1] -ne $after.geometry.pins[$i][1]) { $moved++ }
-    }
-    if ($moved -ne 1) { throw "Expected one saved tack to move; found $moved. Snapshots retained under $root" }
-    foreach ($field in 'dividers','anchors','zones') {
-        $old = ConvertTo-Json -InputObject @($before.geometry.$field | Where-Object { $null -ne $_ }) -Depth 8 -Compress
-        $new = ConvertTo-Json -InputObject @($after.geometry.$field | Where-Object { $null -ne $_ }) -Depth 8 -Compress
-        if ($old -cne $new) { throw "Saved $field changed from $old to $new" }
-    }
-    if ((ConvertTo-Json -InputObject $before.strings -Depth 8 -Compress) -cne (ConvertTo-Json -InputObject $after.strings -Depth 8 -Compress)) { throw "Card-to-card strings changed. Snapshots retained under $root" }
-    Confirm-Step 'Now single-click blank cork once. Did it stay empty?'
-    $blank = Read-MoveSnapshot 'after' $board
-    if ((ConvertTo-Json $blank -Depth 12 -Compress) -cne (ConvertTo-Json $after -Depth 12 -Compress)) {
-        throw "Blank click changed the saved layout. Compare move-placed.json and move-after.json under $root"
-    }
-    Confirm-Step 'Double-click empty top bar space to maximize. Did the window maximize?'
-    Confirm-Step 'Double-click empty top bar space again. Did the window return to its previous size and position?'
-    Confirm-Step 'In Settings > Board, does the folder show a normal drive or network-share path?'
-    Confirm-Step 'Shrink the window until an item is off-screen. Click a numbered arrow to reveal it. Click Refit, then Ctrl+Z. Did the item return to its saved board position?'
-    $desktop = Read-Host 'Enable Desktop layer in Settings > Behavior. Press Win+D and try clicking a card. Enter attached if the board is interactive, fallback if corktop reports that the host is unavailable, or failed for any other result'
-    if ($desktop -notin 'attached','fallback') { throw "Desktop attachment failed: $desktop" }
-    Confirm-Step 'Return to a standard window using the corktop tray menu if needed. Can you interact with the board?'
+    Write-ShellState 'standard'
+    $desktop = Read-Host 'Enable Desktop layer in Settings > Behavior. If the board stays visible, press Win+D and click a card. Enter attached if it responds, fallback if corktop reports the host is unavailable, or failed if it disappears or stops responding'
+    Write-ShellState 'after desktop check'
+    if ($desktop -notin 'attached','fallback','failed') { throw "Unknown desktop result: $desktop" }
+    Confirm-Step 'From the corktop tray menu choose Return to standard window. Did the original board become visible and interactive?'
+    Write-ShellState 'returned to standard'
+    if ($desktop -eq 'failed') { throw 'Desktop attachment failed. Returning to a standard window from the tray passed.' }
     Confirm-Step 'Use the corktop pushpin tray icon to hide and show the board. Did both actions work?'
     Confirm-Step 'Choose New panel from the tray and close that panel. Is the original board still responsive?'
     $saved = [IO.File]::ReadAllText($manifest)
