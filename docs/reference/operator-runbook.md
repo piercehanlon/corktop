@@ -12,7 +12,7 @@ After the bootstrap PR merges, check out its exact main SHA on the Linux build s
 
 ### Gate 2 commands
 
-Use Python 3.11 or later, Git and rustup on the Linux build host. On Linux install a C linker and native X11, Wayland and OpenGL runtime libraries. For Linux CI, put the exact programs from tools.lock.toml on PATH, then run `make setup`, `make full` and `make ci`. Run both CI passes on the same SHA to check package reuse. Detailed logs stay under target/local-ci.
+Use Python 3.11 or later, Git and rustup on the Linux build host. On Linux install a C linker, pkg-config, the libxkbcommon development package, and native X11, Wayland and OpenGL runtime libraries. For Linux CI, put the exact programs from tools.lock.toml on PATH, then run `make setup`, `make full` and `make ci`. Run both CI passes on the same SHA to check package reuse. Detailed logs stay under target/local-ci.
 
 On the Linux build host fetch main and check out the agreed merge SHA. Run the following command from the checkout. It builds the release, installs under a version-and-commit directory, compares digests, and runs the installed checks. Inspect the window before typing its displayed version. Record the final JSON line.
 

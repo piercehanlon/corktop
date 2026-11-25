@@ -56,6 +56,8 @@ pub struct BoardWindow {
     pub control: Option<crate::shell::control::Control>,
     pub panel: bool,
     #[cfg(target_os = "linux")]
+    pub switch_to_layer: bool,
+    #[cfg(target_os = "linux")]
     tray: Option<ksni::blocking::Handle<crate::shell::tray::Tray>>,
     #[cfg(windows)]
     tray: Option<crate::shell::tray::Handle>,
@@ -73,15 +75,23 @@ pub struct BoardWindow {
 }
 
 impl BoardWindow {
+    #[cfg(target_os = "linux")]
+    pub fn layer_unavailable(&mut self, error: std::io::Error) {
+        self.error = format!("Desktop layer unavailable: {error}. Standard window is active.");
+    }
+
     pub fn attach(&mut self, ctx: &egui::Context) {
+        for canvas in self.parents.iter_mut().chain(self.canvas.iter_mut()) {
+            canvas.images.reset_textures();
+        }
         if let Some(control) = &self.control {
             control.attach(ctx);
             #[cfg(windows)]
-            if !self.panel {
+            if !self.panel && self.tray.is_none() {
                 self.tray = crate::shell::tray::start(control.sender.clone()).ok();
             }
             #[cfg(target_os = "linux")]
-            if !self.panel {
+            if !self.panel && self.tray.is_none() {
                 use ksni::blocking::TrayMethods;
                 self.tray = crate::shell::tray::Tray(control.sender.clone())
                     .assume_sni_available(true)
@@ -102,7 +112,7 @@ impl BoardWindow {
         }
     }
 
-    fn process_controls(&mut self, ctx: &egui::Context) {
+    pub(crate) fn process_controls(&mut self, ctx: &egui::Context) {
         use crate::shell::control::{Action, Launch};
         let events: Vec<_> = self.control.iter().flat_map(|c| c.events()).collect();
         for event in events {
@@ -242,12 +252,30 @@ impl eframe::App for BoardWindow {
     }
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.process_controls(ctx);
+        #[cfg(target_os = "linux")]
+        if self.machine.desktop {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if frame
+                .window_handle()
+                .is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)))
+            {
+                self.switch_to_layer = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+        }
         if self.machine.desktop != self.layer.active
             && let Err(e) = self.layer.set(frame, self.machine.desktop)
         {
             self.machine.desktop = self.layer.active;
             self.error = e.to_string();
         }
+        self.draw(ctx);
+    }
+}
+
+impl BoardWindow {
+    pub(crate) fn draw(&mut self, ctx: &egui::Context) {
         self.machine.observe(
             ctx,
             self.parents

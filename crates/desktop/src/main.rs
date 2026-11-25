@@ -136,10 +136,6 @@ fn board_window(path: Option<std::ffi::OsString>, mode: Option<bool>, panel: boo
     if let Some(mode) = mode {
         state.desktop = mode;
     }
-    let options = eframe::NativeOptions {
-        viewport: state.viewport(),
-        ..Default::default()
-    };
     let folder = path.or_else(|| state.folder.clone().filter(|f| !panel && f.is_dir()));
     let mut app = BoardWindow::default();
     app.machine = state;
@@ -148,27 +144,69 @@ fn board_window(path: Option<std::ffi::OsString>, mode: Option<bool>, panel: boo
     if let Some(path) = folder {
         app.open(&path);
     }
-    if eframe::run_native(
-        "corktop",
-        options,
-        Box::new(move |_cc| {
+    // Keep the board and its lock alive when Wayland requires a new surface role.
+    let app = std::rc::Rc::new(std::cell::RefCell::new(app));
+    #[cfg(target_os = "linux")]
+    let mut wayland_events = None;
+    loop {
+        #[cfg(target_os = "linux")]
+        if app.borrow().machine.desktop && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            let mut board = app.borrow_mut();
+            match shell::wayland::run(&mut board) {
+                Ok(shell::wayland::Exit::Quit) => {
+                    eframe::App::on_exit(&mut *board, None);
+                    return ExitCode::SUCCESS;
+                }
+                Ok(shell::wayland::Exit::Standard) => board.machine.desktop = false,
+                Err(e) => {
+                    board.machine.desktop = false;
+                    board.layer_unavailable(e);
+                }
+            }
+        }
+        let options = eframe::NativeOptions {
+            viewport: app.borrow().machine.viewport(),
+            ..Default::default()
+        };
+        let window = app.clone();
+        let creator: eframe::AppCreator = Box::new(move |cc| {
             #[cfg(windows)]
             {
-                // Use the same user-configured interval for recognition and deferred copy.
                 let millis = unsafe {
                     windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime()
                 };
-                _cc.egui_ctx.options_mut(|o| {
+                cc.egui_ctx.options_mut(|o| {
                     o.input_options.max_double_click_delay = f64::from(millis) / 1000.0
                 });
             }
-            app.attach(&_cc.egui_ctx);
-            Ok(Box::new(app))
-        }),
-    )
-    .is_err()
-    {
-        return failure("window initialization failed");
+            window.borrow_mut().attach(&cc.egui_ctx);
+            Ok(Box::new(StandardWindow(window)))
+        });
+        #[cfg(target_os = "linux")]
+        let result = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            shell::wayland::standard(&mut wayland_events, options, creator)
+        } else {
+            eframe::run_native("corktop", options, creator)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let result = eframe::run_native("corktop", options, creator);
+        if result.is_err() {
+            return failure("window initialization failed");
+        }
+        #[cfg(target_os = "linux")]
+        if std::mem::take(&mut app.borrow_mut().switch_to_layer) {
+            continue;
+        }
+        return ExitCode::SUCCESS;
     }
-    ExitCode::SUCCESS
+}
+
+struct StandardWindow(std::rc::Rc<std::cell::RefCell<BoardWindow>>);
+impl eframe::App for StandardWindow {
+    fn update(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
+        self.0.borrow_mut().update(ctx, frame);
+    }
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        self.0.borrow_mut().on_exit(gl);
+    }
 }
