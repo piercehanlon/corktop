@@ -53,6 +53,17 @@ struct Canvas {
 
 #[derive(Default)]
 pub struct BoardWindow {
+    pub control: Option<crate::shell::control::Control>,
+    pub panel: bool,
+    #[cfg(target_os = "linux")]
+    tray: Option<ksni::blocking::Handle<crate::shell::tray::Tray>>,
+    #[cfg(windows)]
+    tray: Option<crate::shell::tray::Handle>,
+    showing_settings: bool,
+    picker_open: bool,
+    minimized: bool,
+    pub machine: crate::shell::MachineState,
+    layer: crate::shell::Layer,
     folder: String,
     parents: Vec<Canvas>,
     preferences: Option<corktop_board::Preferences>,
@@ -62,6 +73,108 @@ pub struct BoardWindow {
 }
 
 impl BoardWindow {
+    pub fn attach(&mut self, ctx: &egui::Context) {
+        if let Some(control) = &self.control {
+            control.attach(ctx);
+            #[cfg(windows)]
+            if !self.panel {
+                self.tray = crate::shell::tray::start(control.sender.clone()).ok();
+            }
+            #[cfg(target_os = "linux")]
+            if !self.panel {
+                use ksni::blocking::TrayMethods;
+                self.tray = crate::shell::tray::Tray(control.sender.clone())
+                    .assume_sni_available(true)
+                    .spawn()
+                    .ok();
+            }
+        }
+    }
+
+    fn choose(&mut self) {
+        if !self.picker_open
+            && let Some(control) = &self.control
+        {
+            match crate::shell::picker::choose(control.sender.clone()) {
+                Ok(()) => self.picker_open = true,
+                Err(e) => self.error = e.to_string(),
+            }
+        }
+    }
+
+    fn process_controls(&mut self, ctx: &egui::Context) {
+        use crate::shell::control::{Action, Launch};
+        let events: Vec<_> = self.control.iter().flat_map(|c| c.events()).collect();
+        for event in events {
+            match event {
+                Action::Launch(Launch::Open { path, desktop }) => {
+                    if let Some(mode) = desktop {
+                        self.machine.desktop = mode;
+                    }
+                    if let Some(path) = path {
+                        self.switch_folder(&path);
+                    }
+                    self.minimized = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                Action::Chosen(path) => {
+                    self.picker_open = false;
+                    self.switch_folder(&path);
+                }
+                Action::PickerClosed => self.picker_open = false,
+                Action::Error(message) => {
+                    self.picker_open = false;
+                    self.error = message;
+                }
+                Action::ToggleVisible => {
+                    self.minimized =
+                        !ctx.input(|i| i.viewport().minimized.unwrap_or(self.minimized));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(self.minimized));
+                    if !self.minimized {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                }
+                Action::ToggleLayer => self.machine.desktop = !self.machine.desktop,
+                Action::ChooseFolder => self.choose(),
+                Action::Panel => {
+                    if let Err(e) = std::env::current_exe()
+                        .and_then(|exe| std::process::Command::new(exe).arg("--panel").spawn())
+                    {
+                        self.error = e.to_string();
+                    }
+                }
+                Action::Settings => {
+                    self.showing_settings = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+    }
+
+    fn switch_folder(&mut self, path: &Path) {
+        if let Ok(full) = path.canonicalize() {
+            if self.canvas.as_ref().is_some_and(|c| c.board.root() == full) {
+                return;
+            }
+            if let Some(i) = self.parents.iter().position(|c| c.board.root() == full) {
+                self.parents.truncate(i + 1);
+                self.canvas = self.parents.pop();
+                return;
+            }
+        }
+        match Board::open(path) {
+            Ok(board) => {
+                self.parents.clear();
+                self.show_board(Ok(board));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => self.open(path),
+            Err(e) => self.error = e.to_string(),
+        }
+    }
+
     pub fn open(&mut self, path: &Path) {
         match Board::open(path) {
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
@@ -118,7 +231,28 @@ impl BoardWindow {
 }
 
 impl eframe::App for BoardWindow {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        if !self.panel
+            && let Err(error) = self.machine.save()
+        {
+            eprintln!("Could not save local window state: {error}");
+        }
+    }
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.process_controls(ctx);
+        if self.machine.desktop != self.layer.active
+            && let Err(e) = self.layer.set(frame, self.machine.desktop)
+        {
+            self.machine.desktop = self.layer.active;
+            self.error = e.to_string();
+        }
+        self.machine.observe(
+            ctx,
+            self.parents
+                .first()
+                .or(self.canvas.as_ref())
+                .map(|c| c.board.root()),
+        );
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let title = ui.heading("corktop").interact(Sense::drag());
@@ -132,19 +266,9 @@ impl eframe::App for BoardWindow {
                 if let Some(canvas) = self.canvas.as_mut() {
                     ui.separator();
                     if let Some(prefs) = self.preferences.as_mut() {
-                        ui.menu_button("Settings", |ui| {
-                            for (key, label) in [
-                                ("display_only_titles", "Display-only titles"),
-                                ("link_file_drops", "Link dropped files by default"),
-                            ] {
-                                let mut value = prefs.flag(key, false);
-                                if ui.checkbox(&mut value, label).changed()
-                                    && let Err(e) = prefs.set(key, value.into())
-                                {
-                                    self.error = e.to_string();
-                                }
-                            }
-                        });
+                        if ui.button("Settings").clicked() {
+                            self.showing_settings = true;
+                        }
                         canvas.display_only = prefs.flag("display_only_titles", false);
                         canvas.link_drops = prefs.flag("link_file_drops", false);
                     }
@@ -206,8 +330,54 @@ impl eframe::App for BoardWindow {
                 ui.colored_label(ui.visuals().error_fg_color, &self.error);
             }
         });
+        if self.showing_settings {
+            let mut show = true;
+            egui::Window::new("Settings")
+                .open(&mut show)
+                .show(ctx, |ui| {
+                    if ui.button("Switch folder…").clicked() {
+                        self.choose();
+                    }
+                    if ui.button("New panel").clicked()
+                        && let Some(c) = &self.control
+                    {
+                        c.sender.send(crate::shell::control::Action::Panel);
+                    }
+                    ui.checkbox(&mut self.machine.desktop, "Desktop layer");
+                    let mut start = self.machine.start_with_os;
+                    if ui.checkbox(&mut start, "Start with OS").changed() {
+                        match std::env::current_exe()
+                            .and_then(|exe| crate::shell::login::set(start, &exe))
+                        {
+                            Ok(()) => {
+                                self.machine.start_with_os = start;
+                                if let Err(e) = self.machine.save() {
+                                    self.error = e.to_string();
+                                }
+                            }
+                            Err(e) => self.error = e.to_string(),
+                        }
+                    }
+                    if let Some(prefs) = &mut self.preferences {
+                        for (key, label) in [
+                            ("display_only_titles", "Display-only titles"),
+                            ("link_file_drops", "Link dropped files by default"),
+                        ] {
+                            let mut value = prefs.flag(key, false);
+                            if ui.checkbox(&mut value, label).changed()
+                                && let Err(e) = prefs.set(key, value.into())
+                            {
+                                self.error = e.to_string();
+                            }
+                        }
+                    }
+                });
+            self.showing_settings = show;
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(canvas) = &mut self.canvas {
+            if let Some(canvas) = &mut self.canvas
+                && self.occupied.is_none()
+            {
                 let scroll = egui::scroll_area::ScrollSource {
                     drag: false,
                     ..Default::default()
@@ -256,6 +426,9 @@ impl eframe::App for BoardWindow {
                         .desired_width(440.0),
                 );
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                if ui.button("Browse…").clicked() {
+                    self.choose();
+                }
                 if ui.button("Open folder").clicked() || enter {
                     let folder = self.folder.clone();
                     self.open(Path::new(&folder));

@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod board_window;
+mod shell;
 use board_window::BoardWindow;
 use eframe::egui;
 use std::process::ExitCode;
@@ -54,8 +55,17 @@ fn main() -> ExitCode {
                 return failure("window initialization failed");
             }
         }
-        (None, None) => return board_window(None),
-        (Some(flag), Some(path)) if flag == "--board" => return board_window(Some(path)),
+        (None, None) => return board_window(None, None, false),
+        (Some(flag), Some(path)) if flag == "--board" => {
+            return board_window(Some(path), None, false);
+        }
+        (Some(flag), path) if flag == "--desktop" || flag == "--window" => {
+            return board_window(path, Some(flag == "--desktop"), false);
+        }
+        (Some(path), None) if !path.to_string_lossy().starts_with('-') => {
+            return board_window(Some(path), None, false);
+        }
+        (Some(flag), path) if flag == "--panel" => return board_window(path, Some(false), true),
         (Some(flag), None) if flag == "--version" => println!("{VERSION}"),
         (Some(flag), None) if flag == "--identity" => println!(
             "{}",
@@ -99,17 +109,45 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn board_window(path: Option<std::ffi::OsString>) -> ExitCode {
-    let mut app = BoardWindow::default();
-    if let Some(path) = path {
-        app.open(std::path::Path::new(&path));
+fn board_window(path: Option<std::ffi::OsString>, mode: Option<bool>, panel: bool) -> ExitCode {
+    let path = match path.map(std::path::absolute).transpose() {
+        Ok(path) => path,
+        Err(_) => return failure("invalid board path"),
+    };
+    let control = if panel {
+        shell::control::Control::local()
+    } else {
+        match shell::control::start(shell::control::Launch::Open {
+            path: path.clone(),
+            desktop: mode,
+        }) {
+            Ok(Some(c)) => c,
+            Ok(None) => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("Launch routing: {e}");
+                return failure("could not route launch");
+            }
+        }
+    };
+    let mut state = match shell::MachineState::load() {
+        Ok(s) => s,
+        Err(_) => return failure("could not read local window state"),
+    };
+    if let Some(mode) = mode {
+        state.desktop = mode;
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_decorations(false)
-            .with_inner_size([780.0, 540.0]),
+        viewport: state.viewport(),
         ..Default::default()
     };
+    let folder = path.or_else(|| state.folder.clone().filter(|f| !panel && f.is_dir()));
+    let mut app = BoardWindow::default();
+    app.machine = state;
+    app.panel = panel;
+    app.control = Some(control);
+    if let Some(path) = folder {
+        app.open(&path);
+    }
     if eframe::run_native(
         "corktop",
         options,
@@ -124,6 +162,7 @@ fn board_window(path: Option<std::ffi::OsString>) -> ExitCode {
                     o.input_options.max_double_click_delay = f64::from(millis) / 1000.0
                 });
             }
+            app.attach(&_cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )

@@ -3,3 +3,10 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"]
 
 [licenses]
 allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "BSL-1.0", "CC0-1.0", "ISC", "Zlib", "Unicode-3.0", "OFL-1.1", "Ubuntu-font-1.0"]
+
+# Permissive license grants checked against the upstream notices for these pinned releases.
+exceptions = [
+    { crate = "ksni@0.3.7", allow = ["Unlicense"] },
+    { crate = "doctest-file@1.1.1", allow = ["0BSD"] },
+    { crate = "recvmsg@1.0.0", allow = ["0BSD"] },
+]
