@@ -38,3 +38,5 @@ On Windows, extract the entire ZIP under a user-owned directory, keeping its ver
 Inspect the window at the prompt and return the final JSON line. The verifier compares the installed executable with the build receipt, uses a fresh profile and disposable board, and checks migration and repeat persistence. The Windows installation needs neither Rust nor a repository checkout.
 
 For issue #2, run `.\verify-text-cards.ps1` from PowerShell inside the extracted Windows ZIP. Follow its prompts to create and drag the test note, fully close the app, and inspect the reopened folder. Return the final JSON line. The verifier reads the Markdown file independently and checks the manifest coordinates before and after restart.
+
+For the Pilot string round trip, run `.\verify-strings.ps1` in the extracted Windows ZIP or follow the included [manual test](../../scripts/test-strings-windows.md). Both routes retain the disposable board for inspection.

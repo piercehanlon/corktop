@@ -38,7 +38,7 @@ try {
     Write-Host 'Double-click empty space. Type these two lines, then press Ctrl+Enter.'
     Write-Host 'Field note'
     Write-Host 'Trace the red thread.'
-    $null = Read-Host 'Leave Corktop open and press Enter here once the card appears'
+    $null = Read-Host 'Leave corktop open and press Enter here once the card appears'
     $notes = @(Get-ChildItem -LiteralPath $board -Filter '*.md' -File)
     if ($notes.Count -ne 1) { throw 'Expected one Markdown file' }
     $expected = "Field note`nTrace the red thread."
@@ -49,8 +49,8 @@ try {
     $null = Read-Host 'Drag the card to a different spot, release it, then press Enter here'
     $moved = Read-Position
     if ($initial -eq $moved) { throw 'The saved position did not change' }
-    $null = Read-Host 'Click Close in Corktop, then press Enter here'
-    if (!$app.WaitForExit(5000) -or $app.ExitCode -ne 0) { throw 'Corktop did not close cleanly' }
+    $null = Read-Host 'Click Close in corktop, then press Enter here'
+    if (!$app.WaitForExit(5000) -or $app.ExitCode -ne 0) { throw 'corktop did not close cleanly' }
     $app.Dispose()
     $app = $null
     $app = Open-TestBoard
