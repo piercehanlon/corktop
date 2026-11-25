@@ -21,6 +21,10 @@ struct TackDrag {
 
 struct Canvas {
     board: Board,
+    enter: Option<usize>,
+    edit_title: Option<(usize, String)>,
+    display_only: bool,
+    link_drops: bool,
     images: images::Images,
     pasted_text: bool,
     typed_v: bool,
@@ -39,6 +43,8 @@ struct Canvas {
 #[derive(Default)]
 pub struct BoardWindow {
     folder: String,
+    parents: Vec<Canvas>,
+    preferences: Option<corktop_board::Preferences>,
     occupied: Option<(std::path::PathBuf, usize)>,
     canvas: Option<Canvas>,
     error: String,
@@ -60,11 +66,24 @@ impl BoardWindow {
     fn show_board(&mut self, result: std::io::Result<Board>) {
         match result {
             Ok(board) => {
+                if self.parents.is_empty() {
+                    match corktop_board::Preferences::load(board.root()) {
+                        Ok(p) => self.preferences = Some(p),
+                        Err(e) => {
+                            self.error = e.to_string();
+                            return;
+                        }
+                    }
+                }
                 let (open_error_tx, open_error_rx) = std::sync::mpsc::channel();
                 self.canvas = Some(Canvas {
                     open_error_tx,
                     open_error_rx,
                     board,
+                    enter: None,
+                    edit_title: None,
+                    display_only: false,
+                    link_drops: false,
                     images: Default::default(),
                     pasted_text: false,
                     typed_v: false,
@@ -94,8 +113,28 @@ impl eframe::App for BoardWindow {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
 
+                if !self.parents.is_empty() && ui.button("Parent folder").clicked() {
+                    self.canvas = self.parents.pop();
+                }
                 if let Some(canvas) = self.canvas.as_mut() {
                     ui.separator();
+                    if let Some(prefs) = self.preferences.as_mut() {
+                        ui.menu_button("Settings", |ui| {
+                            for (key, label) in [
+                                ("display_only_titles", "Display-only titles"),
+                                ("link_file_drops", "Link dropped files by default"),
+                            ] {
+                                let mut value = prefs.flag(key, false);
+                                if ui.checkbox(&mut value, label).changed()
+                                    && let Err(e) = prefs.set(key, value.into())
+                                {
+                                    self.error = e.to_string();
+                                }
+                            }
+                        });
+                        canvas.display_only = prefs.flag("display_only_titles", false);
+                        canvas.link_drops = prefs.flag("link_file_drops", false);
+                    }
                     let trash = canvas.board.trashed_files();
                     if !trash.is_empty() {
                         ui.menu_button("Recycle bin", |ui| {
@@ -157,6 +196,18 @@ impl eframe::App for BoardWindow {
                             ctx.request_repaint();
                         }
                     });
+                if let Some(idx) = canvas.enter.take() {
+                    let child = canvas
+                        .board
+                        .child_path(idx)
+                        .and_then(|p| Board::stage_folder(&p));
+                    if child.is_ok()
+                        && let Some(parent) = self.canvas.take()
+                    {
+                        self.parents.push(parent);
+                    }
+                    self.show_board(child);
+                }
             } else if let Some((path, count)) = self.occupied.clone() {
                 ui.label(format!("This folder contains {count} entries."));
                 if ui.button("Choose an empty folder").clicked() {
@@ -239,7 +290,7 @@ impl Canvas {
         if ui.input(|i| !i.raw.hovered_files.is_empty()) {
             let label = if mods.shift {
                 "Move"
-            } else if mods.ctrl {
+            } else if mods.ctrl != self.link_drops {
                 "Link"
             } else {
                 "Copy"
@@ -258,8 +309,12 @@ impl Canvas {
                     ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin) - origin
                         + vec2(0.0, n as f32 * 26.0),
                 );
-                self.board
-                    .import_file(path, pos, mods.ctrl && !mods.shift, mods.shift)?;
+                self.board.import_file(
+                    path,
+                    pos,
+                    (mods.ctrl != self.link_drops) && !mods.shift,
+                    mods.shift,
+                )?;
                 ui.ctx().request_repaint();
             }
         }
@@ -294,11 +349,15 @@ impl Canvas {
             if self.draft.is_none() && response.clicked() {
                 if response.double_clicked() && self.pending_copy.is_some_and(|(id, _)| id == idx) {
                     self.pending_copy = None;
-                    opener::launch(
-                        self.board.open_target(idx)?,
-                        self.open_error_tx.clone(),
-                        ui.ctx().clone(),
-                    )?;
+                    if card.folder {
+                        self.enter = Some(idx);
+                    } else {
+                        opener::launch(
+                            self.board.open_target(idx)?,
+                            self.open_error_tx.clone(),
+                            ui.ctx().clone(),
+                        )?;
+                    }
                 } else {
                     self.pending_copy = Some((idx, now + delay));
                 }
@@ -313,11 +372,31 @@ impl Canvas {
                 4.0,
                 if card.missing {
                     Color32::from_gray(165)
+                } else if card.folder {
+                    Color32::from_rgb(218, 181, 115)
                 } else {
                     Color32::from_rgb(243, 228, 178)
                 },
             );
             if rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO)) {
+                let edit =
+                    Rect::from_min_size(rect.right_bottom() - vec2(44.0, 23.0), vec2(42.0, 21.0));
+                if ui
+                    .put(edit, egui::Button::new("Edit").frame(false))
+                    .on_hover_text("Edit card title")
+                    .clicked()
+                {
+                    self.edit_title = Some((
+                        idx,
+                        card.title.clone().unwrap_or_else(|| {
+                            card.text.lines().next().unwrap_or(&card.file).to_owned()
+                        }),
+                    ));
+                }
+            }
+            if !card.folder
+                && rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO))
+            {
                 let button =
                     Rect::from_min_size(rect.right_top() + vec2(-24.0, 2.0), vec2(22.0, 22.0));
                 if ui
@@ -370,7 +449,7 @@ impl Canvas {
                 if card.missing {
                     format!("Missing: {}", card.file)
                 } else {
-                    title
+                    card.title.clone().unwrap_or(title)
                 },
                 egui::FontId::proportional(18.0),
                 Color32::from_gray(32),
@@ -396,6 +475,28 @@ impl Canvas {
             ui.ctx().request_repaint();
             return Ok(());
         }
+        if let Some((idx, text)) = &mut self.edit_title {
+            let mut done = false;
+            let mut commit = false;
+            egui::Window::new("Edit card title")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.text_edit_singleline(text);
+                    commit = ui.button("Save title").clicked();
+                    done = ui.button("Cancel").clicked();
+                });
+            if commit {
+                self.board.edit_title(
+                    *idx,
+                    text,
+                    self.display_only || self.board.cards()[*idx].folder,
+                )?;
+            }
+            if done || commit {
+                self.edit_title = None;
+            }
+        }
         self.finish_copy(ui, &rects, now)?;
         if background.clicked()
             && let Some(p) = background.interact_pointer_pos()
@@ -410,6 +511,24 @@ impl Canvas {
             self.paste_notes(ui, origin)?;
         }
         if let Some((idx, pos)) = dropped {
+            let target = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
+                rects
+                    .iter()
+                    .enumerate()
+                    .rfind(|(n, r)| *n != idx && self.board.cards()[*n].folder && r.contains(p))
+                    .map(|(n, _)| n)
+            });
+            if let Some(folder) = target
+                && !self.board.cards()[idx].folder
+            {
+                self.board.move_into_folder(idx, folder)?;
+                self.copied = None;
+                self.pending_copy = None;
+                self.tack_drag = None;
+                self.cut_menu = None;
+                ui.ctx().request_repaint();
+                return Ok(());
+            }
             self.board.move_card(idx, pos)?;
         }
         self.show_strings(ui, &rects)?;

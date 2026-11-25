@@ -19,7 +19,9 @@ fn invalid(message: &'static str) -> io::Error {
 pub struct Card {
     pub file: String,
     pub text: String,
+    pub title: Option<String>,
     pub missing: bool,
+    pub folder: bool,
     revision: Option<(SystemTime, u64)>,
     pub position: [i32; 2],
 }
@@ -116,7 +118,9 @@ impl Card {
             file: file.into(),
             position,
             text: String::new(),
+            title: None,
             missing: true,
+            folder: false,
             revision: None,
         };
         card.refresh(root)?;
@@ -130,7 +134,7 @@ impl Card {
     fn refresh(&mut self, root: &Path) -> io::Result<()> {
         let path = root.join(&self.file);
         let meta = match path.symlink_metadata() {
-            Ok(meta) if meta.is_file() => meta,
+            Ok(meta) if meta.is_file() || meta.is_dir() => meta,
             Ok(_) => return Err(invalid("expected a regular note file")),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 self.missing = true;
@@ -141,7 +145,20 @@ impl Card {
         };
         let revision = meta.modified().ok().map(|mtime| (mtime, meta.len()));
         if self.missing || revision.is_none() || self.revision != revision {
-            self.text = if is_text(&self.file) {
+            self.folder = meta.is_dir();
+            self.text = if self.folder {
+                let mut count = 0;
+                for entry in fs::read_dir(&path)? {
+                    let entry = entry?;
+                    let kind = entry.file_type()?;
+                    if (kind.is_file() || kind.is_dir())
+                        && entry.file_name().to_str().is_some_and(valid_name)
+                    {
+                        count += 1;
+                    }
+                }
+                format!("{}\n{count} items", self.file)
+            } else if is_text(&self.file) {
                 use std::io::Read;
                 let mut bytes = Vec::new();
                 nofollow_options()
@@ -239,11 +256,16 @@ impl Board {
                 if !valid_name(file) || !seen.insert(file.to_ascii_lowercase()) {
                     return Err(invalid("invalid or duplicate card filename"));
                 }
-                cards.push(Card::load(
+                let mut card = Card::load(
                     &root,
                     file,
                     [position(entry.get("x"))?, position(entry.get("y"))?],
-                )?);
+                )?;
+                card.title = entry
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                cards.push(card);
             }
         }
         let strings = load_strings(&manifest, &cards)?;
@@ -270,7 +292,10 @@ impl Board {
             let entry = entry?;
             if let Ok(name) = entry.file_name().into_string()
                 && valid_name(&name)
-                && entry.file_type()?.is_file()
+                && {
+                    let kind = entry.file_type()?;
+                    kind.is_file() || kind.is_dir()
+                }
                 && !known.contains(&name.to_ascii_lowercase())
             {
                 inbox.push(name);
@@ -330,6 +355,22 @@ impl Board {
         self.scan_inbox()
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn child_path(&self, index: usize) -> io::Result<PathBuf> {
+        let card = self
+            .cards
+            .get(index)
+            .ok_or_else(|| invalid("unknown folder card"))?;
+        let path = self.root.join(&card.file);
+        if !card.folder || !path.symlink_metadata()?.is_dir() {
+            return Err(invalid("folder is unavailable"));
+        }
+        Ok(path)
+    }
+
     pub fn note_path(&self, index: usize) -> io::Result<PathBuf> {
         let card = self
             .cards
@@ -374,6 +415,9 @@ impl Board {
     }
 
     pub fn note_text(&self, index: usize) -> io::Result<String> {
+        if self.cards.get(index).is_some_and(|c| c.folder) {
+            return Ok(self.child_path(index)?.to_string_lossy().into_owned());
+        }
         let path = self.note_path(index)?;
         if is_text(&self.cards[index].file) {
             read_text(&path, NOTE_LIMIT as u64)
@@ -617,6 +661,50 @@ impl Board {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn folder_transfer_preserves_payload_and_title_and_only_unlinks_local_strands() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("First", [12, 34]).unwrap();
+        board.create("Second", [32, 42]).unwrap();
+        fs::create_dir(root.path().join("Archive")).unwrap();
+        board.refresh().unwrap();
+        board.pin_files(&["Archive".into()]).unwrap();
+        board.connect(0, 1).unwrap();
+        board.connect(1, 2).unwrap();
+        board.edit_title(0, "Revised title", false).unwrap();
+        let name = board.cards()[0].file.clone();
+        assert!(name.ends_with("_revised-title.md"));
+        let child = Board::open(&board.child_path(2).unwrap()).unwrap();
+        assert!(board.move_into_folder(0, 2).is_err());
+        assert_eq!(board.cards().len(), 3);
+        drop(child);
+        board.move_into_folder(0, 2).unwrap();
+        drop(board);
+        let board = Board::open(root.path()).unwrap();
+        assert_eq!(board.strings(), [[0, 1]]);
+        assert!(!root.path().join(&name).exists());
+        let child = Board::open(&board.child_path(1).unwrap()).unwrap();
+        assert_eq!(child.cards()[0].file, name);
+        assert_eq!(child.cards()[0].title.as_deref(), Some("Revised title"));
+        assert_eq!(child.note_text(0).unwrap(), "First");
+    }
+
+    #[test]
+    fn portable_preferences_survive_reopen_and_preserve_unrelated_keys() {
+        let root = tempfile::tempdir().unwrap();
+        let mut settings = crate::Preferences::load(root.path()).unwrap();
+        assert!(!settings.flag("link_file_drops", false));
+        settings.set("link_file_drops", true.into()).unwrap();
+        let mut second = crate::Preferences::load(root.path()).unwrap();
+        second.set("display_only_titles", true.into()).unwrap();
+        settings.set("tutorial_seen", true.into()).unwrap();
+        let restored = crate::Preferences::load(root.path()).unwrap();
+        for key in ["tutorial_seen", "link_file_drops", "display_only_titles"] {
+            assert!(restored.flag(key, false));
+        }
+    }
 
     #[test]
     fn trash_restore_keeps_contents_position_and_string_and_protects_collisions() {
