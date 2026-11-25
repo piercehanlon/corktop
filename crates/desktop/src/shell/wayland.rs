@@ -1,5 +1,7 @@
+mod drops;
 mod graphics;
 mod input;
+mod scale;
 
 use crate::BoardWindow;
 use eframe::egui;
@@ -34,6 +36,7 @@ pub enum Exit {
     Standard,
 }
 struct Host {
+    drops: drops::DropTarget,
     clipboard: smithay_clipboard::Clipboard,
     registry: RegistryState,
     outputs: OutputState,
@@ -46,7 +49,8 @@ struct Host {
     handle: smithay_client_toolkit::reexports::calloop::LoopHandle<'static, Host>,
     input: egui::RawInput,
     size: [u32; 2],
-    scale: i32,
+    scale: f32,
+    fractional: Option<scale::Fractional>,
     configured: bool,
     hidden: bool,
     closed: bool,
@@ -74,6 +78,7 @@ pub fn run(app: &mut BoardWindow) -> io::Result<Exit> {
         Some("corktop"),
         None,
     );
+    let fractional = scale::Fractional::bind(&globals, &qh, layer.wl_surface());
     layer.set_anchor(Anchor::all());
     layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     layer.set_size(0, 0);
@@ -84,6 +89,7 @@ pub fn run(app: &mut BoardWindow) -> io::Result<Exit> {
         unsafe { smithay_clipboard::Clipboard::new(conn.backend().display_ptr().cast()) };
     let mut events = EventLoop::try_new().map_err(io::Error::other)?;
     let mut host = Host {
+        drops: drops::DropTarget::bind(&globals, &qh),
         handle: events.handle(),
         compositor,
         shm: smithay_client_toolkit::shm::Shm::bind(&globals, &qh).map_err(io::Error::other)?,
@@ -96,13 +102,17 @@ pub fn run(app: &mut BoardWindow) -> io::Result<Exit> {
         pointer: None,
         input: Default::default(),
         size: [1, 1],
-        scale: 1,
+        scale: 1.,
+        fractional,
         configured: false,
         hidden: false,
         closed: false,
         next: None,
     };
 
+    for seat in host.seats.seats() {
+        host.drops.add_seat(&qh, &seat);
+    }
     WaylandSource::new(conn.clone(), queue)
         .insert(events.handle())
         .map_err(|e| io::Error::other(e.to_string()))?;
@@ -144,10 +154,14 @@ pub fn run(app: &mut BoardWindow) -> io::Result<Exit> {
             .viewports
             .entry(egui::ViewportId::ROOT)
             .or_default();
-        view.native_pixels_per_point = Some(host.scale as f32);
+        view.native_pixels_per_point = Some(host.scale);
         view.inner_rect = Some(rect);
         view.minimized = Some(host.hidden);
-        let out = ctx.run(host.input.take(), |ctx| {
+        let mut input = host.input.take();
+        if host.drops.deliver(&mut input) {
+            host.redraw();
+        }
+        let out = ctx.run(input, |ctx| {
             app.process_controls(ctx);
             if host.configured && !host.hidden {
                 app.draw(ctx);
@@ -185,7 +199,9 @@ pub fn run(app: &mut BoardWindow) -> io::Result<Exit> {
         if !host.configured || host.hidden {
             continue;
         }
-        let size = host.size.map(|v| v.saturating_mul(host.scale as u32));
+        let size = host
+            .size
+            .map(|v| (v as f64 * f64::from(host.scale)).round().max(1.) as u32);
         if graphics.is_none() {
             graphics = Some(graphics::Graphics::new(
                 &conn,
@@ -211,6 +227,9 @@ impl LayerShellHandler for Host {
         _: u32,
     ) {
         self.size = [conf.new_size.0.max(1), conf.new_size.1.max(1)];
+        if let Some(fractional) = &self.fractional {
+            fractional.resize(self.size);
+        }
         self.configured = true;
         self.redraw();
     }
@@ -226,8 +245,11 @@ impl CompositorHandler for Host {
         if surface != self.layer.wl_surface() {
             return;
         }
-        self.scale = factor.max(1);
-        surface.set_buffer_scale(self.scale);
+        if self.fractional.is_some() {
+            return;
+        }
+        self.scale = factor.max(1) as f32;
+        surface.set_buffer_scale(factor.max(1));
         self.redraw();
     }
     fn transform_changed(

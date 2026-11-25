@@ -56,7 +56,7 @@ pub struct BoardWindow {
     pub control: Option<crate::shell::control::Control>,
     pub panel: bool,
     #[cfg(target_os = "linux")]
-    pub switch_to_layer: bool,
+    pub change_host: bool,
     #[cfg(target_os = "linux")]
     tray: Option<ksni::blocking::Handle<crate::shell::tray::Tray>>,
     #[cfg(windows)]
@@ -113,58 +113,77 @@ impl BoardWindow {
     }
 
     pub(crate) fn process_controls(&mut self, ctx: &egui::Context) {
-        use crate::shell::control::{Action, Launch};
         let events: Vec<_> = self.control.iter().flat_map(|c| c.events()).collect();
         for event in events {
-            match event {
-                Action::Launch(Launch::Open { path, desktop }) => {
-                    if let Some(mode) = desktop {
-                        self.machine.desktop = mode;
-                    }
-                    if let Some(path) = path {
-                        self.switch_folder(&path);
-                    }
-                    self.hidden = false;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.apply_control(ctx, event);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn wait_for_visibility(&mut self) -> bool {
+        let ctx = egui::Context::default();
+        while self.hidden {
+            let Some(event) = self.control.as_ref().and_then(|c| c.wait()) else {
+                return false;
+            };
+            if matches!(event, crate::shell::control::Action::Quit) {
+                return false;
+            }
+            self.apply_control(&ctx, event);
+        }
+        true
+    }
+
+    fn apply_control(&mut self, ctx: &egui::Context, event: crate::shell::control::Action) {
+        use crate::shell::control::{Action, Launch};
+        match event {
+            Action::Launch(Launch::Open { path, desktop }) => {
+                if let Some(mode) = desktop {
+                    self.machine.desktop = mode;
                 }
-                Action::Chosen(path) => {
-                    self.picker_open = false;
+                if let Some(path) = path {
                     self.switch_folder(&path);
                 }
-                Action::PickerClosed => self.picker_open = false,
-                Action::Error(message) => {
-                    self.picker_open = false;
-                    self.error = message;
-                }
-                Action::ToggleVisible => {
-                    self.hidden =
-                        !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!self.hidden));
-                    if !self.hidden {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    }
-                }
-                Action::ToggleLayer => self.machine.desktop = !self.machine.desktop,
-                Action::ChooseFolder => self.choose(),
-                Action::Panel => {
-                    if let Err(e) = std::env::current_exe()
-                        .and_then(|exe| std::process::Command::new(exe).arg("--panel").spawn())
-                    {
-                        self.error = e.to_string();
-                    }
-                }
-                Action::Settings => {
-                    self.showing_settings = true;
-                    self.hidden = false;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                self.hidden = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            Action::Chosen(path) => {
+                self.picker_open = false;
+                self.switch_folder(&path);
+            }
+            Action::PickerClosed => self.picker_open = false,
+            Action::Error(message) => {
+                self.picker_open = false;
+                self.error = message;
+            }
+            Action::ToggleVisible => {
+                self.hidden =
+                    !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!self.hidden));
+                if !self.hidden {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
-                Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             }
+            Action::ToggleLayer => self.machine.desktop = !self.machine.desktop,
+            Action::ChooseFolder => self.choose(),
+            Action::Panel => {
+                if let Err(e) = std::env::current_exe()
+                    .and_then(|exe| std::process::Command::new(exe).arg("--panel").spawn())
+                {
+                    self.error = e.to_string();
+                }
+            }
+            Action::Settings => {
+                self.showing_settings = true;
+                self.hidden = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
 
@@ -253,13 +272,13 @@ impl eframe::App for BoardWindow {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.process_controls(ctx);
         #[cfg(target_os = "linux")]
-        if self.machine.desktop {
+        if self.machine.desktop || self.hidden {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             if frame
                 .window_handle()
                 .is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)))
             {
-                self.switch_to_layer = true;
+                self.change_host = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }

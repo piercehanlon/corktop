@@ -65,6 +65,11 @@ impl Control {
     pub fn attach(&self, ctx: &eframe::egui::Context) {
         *self.sender.context.lock().unwrap() = Some(ctx.clone());
     }
+    #[cfg(target_os = "linux")]
+    pub fn wait(&self) -> Option<Action> {
+        self.rx.recv().ok()
+    }
+
     pub fn events(&self) -> impl Iterator<Item = Action> + '_ {
         self.rx.try_iter()
     }

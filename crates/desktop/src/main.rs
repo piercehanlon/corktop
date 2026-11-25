@@ -194,7 +194,9 @@ fn board_window(path: Option<std::ffi::OsString>, mode: Option<bool>, panel: boo
             return failure("window initialization failed");
         }
         #[cfg(target_os = "linux")]
-        if std::mem::take(&mut app.borrow_mut().switch_to_layer) {
+        if std::mem::take(&mut app.borrow_mut().change_host)
+            && app.borrow_mut().wait_for_visibility()
+        {
             continue;
         }
         return ExitCode::SUCCESS;

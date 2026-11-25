@@ -22,6 +22,7 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Graphics_Gdi","Win32_Sys
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "=0.13.2"
 ksni = { version = "=0.3.7", features = ["blocking"] }
+arboard = { version = "=3.7.0", features = ["wayland-data-control"] }
 smithay-client-toolkit = "=0.19.2"
 wayland-client = "=0.31.15"
 wayland-backend = { version = "=0.3.17", features = ["client_system"] }
@@ -29,3 +30,4 @@ glutin = { version = "=0.32.3", default-features = false, features = ["egl", "wa
 egui_glow = "=0.32.3"
 smithay-clipboard = "=0.7.3"
 winit = { version = "=0.30.13", default-features = false, features = ["wayland", "x11", "rwh_06"] }
+url = "=2.5.9"

@@ -19,8 +19,12 @@ impl SeatHandler for Host {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
     }
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
+        self.drops.add_seat(qh, &seat);
+    }
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
+        self.drops.remove_seat(&seat);
+    }
     fn new_capability(
         &mut self,
         _: &Connection,
@@ -139,6 +143,7 @@ impl KeyboardHandler for Host {
             alt: m.alt,
             mac_cmd: false,
         };
+        self.redraw();
     }
 }
 impl Host {
@@ -171,6 +176,9 @@ impl Host {
                     {
                         self.input.events.push(Event::Paste(text));
                     }
+                    // The board checks for a bitmap on release when no text was offered.
+                    self.redraw();
+                    return;
                 }
                 _ => {}
             }
