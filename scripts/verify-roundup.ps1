@@ -76,6 +76,14 @@ try {
     }
     Confirm-Step 'Copy an image from Paint or Snipping Tool and paste on blank board space. Is its thumbnail visible? Then copy Copy.txt in Explorer and paste it on blank board space.'
     if (@(Get-ChildItem -LiteralPath $board -Filter '*.png').Count -ne 1 -or @(Get-ChildItem -LiteralPath $board -Filter '*_Copy*.txt').Count -ne 2) { throw 'Image or Explorer paste missing' }
+    foreach ($name in 'Choice one.txt','Choice two.txt') { [IO.File]::WriteAllText((Join-Path $files $name),$name,$utf8) }
+    Confirm-Step "In Settings choose Dropped files > Ask. In Explorer select Choice one.txt and Choice two.txt from $files and drag them together. Did the board highlight and the chooser list both names? Tick Remember this choice and press Esc."
+    if (@(Get-ChildItem -LiteralPath $board -Filter '*_Choice*').Count) { throw 'Cancelled drop created files' }
+    Confirm-Step 'Drop the same pair again. Is Remember this choice unchecked? Tick it and choose Link. Drop the pair a third time. Did LINK appear during the drag and both links arrive immediately?'
+    if (@(Get-ChildItem -LiteralPath $board -Filter '*_Choice*.corklink').Count -ne 4) { throw 'Expected four links after the two confirmed drops' }
+    foreach ($name in 'Choice one.txt','Choice two.txt') {
+        if (![IO.File]::Exists((Join-Path $files $name))) { throw 'Linked source disappeared' }
+    }
     Confirm-Step 'Change the material kit in Settings. Open the top-right list, search Witness and choose it. Did the board reveal the note? Long-press its body, change its paper color, and apply.'
     if ([IO.File]::ReadAllText($manifest) -notmatch '(?m)^tone = [0-3]') { throw 'Card color missing' }
     Confirm-Step 'Place three bare tacks with the pin tool. Hold and drag between tacks to close a triangle, name the zone, then move the zone by its label. Did the labeled area move?'
