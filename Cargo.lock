@@ -364,6 +364,7 @@ name = "corktop-board"
 version = "0.4.0"
 dependencies = [
  "libc",
+ "serde",
  "tempfile",
  "toml",
  "url",

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 toml = "=0.9.8"
 tempfile = "3"
+serde = { version = "=1.0.229", features = ["derive"] }
 url = "=2.5.9"
 
 [target.'cfg(unix)'.dependencies]

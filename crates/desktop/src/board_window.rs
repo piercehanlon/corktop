@@ -4,6 +4,7 @@ use std::{path::Path, time::Duration};
 
 mod images;
 mod opener;
+mod spatial;
 
 const CARD_SIZE: Vec2 = vec2(220.0, 112.0);
 
@@ -21,6 +22,7 @@ struct TackDrag {
 
 struct Canvas {
     board: Board,
+    spatial: spatial::Spatial,
     enter: Option<usize>,
     edit_title: Option<(usize, String)>,
     confirm_empty: bool,
@@ -81,6 +83,7 @@ impl BoardWindow {
                     open_error_tx,
                     open_error_rx,
                     board,
+                    spatial: Default::default(),
                     enter: None,
                     edit_title: None,
                     confirm_empty: false,
@@ -136,6 +139,13 @@ impl eframe::App for BoardWindow {
                         });
                         canvas.display_only = prefs.flag("display_only_titles", false);
                         canvas.link_drops = prefs.flag("link_file_drops", false);
+                    }
+                    if ui
+                        .selectable_label(canvas.spatial.placing, "Pin")
+                        .on_hover_text("Place a bare tack on the board")
+                        .clicked()
+                    {
+                        canvas.spatial.placing = !canvas.spatial.placing;
                     }
                     let trash = canvas.board.trashed_files();
                     if !trash.is_empty() {
@@ -283,7 +293,17 @@ impl Canvas {
         }
         ui.ctx()
             .request_repaint_after(self.next_refresh.saturating_duration_since(time));
+        if self.draft.is_none()
+            && self.edit_title.is_none()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Z))
+        {
+            self.board.undo_layout()?;
+            ui.ctx().request_repaint();
+        }
         let mut size = viewport;
+        for p in &self.board.geometry().pins {
+            size = size.max(offset(*p) + vec2(12.0, 12.0));
+        }
         for card in self.board.cards() {
             size = size.max(offset(card.position) + CARD_SIZE);
         }
@@ -554,6 +574,8 @@ impl Canvas {
             self.board.move_card(idx, pos)?;
         }
         self.show_strings(ui, &rects)?;
+        self.spatial
+            .show(&mut self.board, ui, origin, &background)?;
         if self.draft.is_none()
             && background.double_clicked()
             && let Some(p) = background.interact_pointer_pos()

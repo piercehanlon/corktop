@@ -1,5 +1,7 @@
 mod recycle;
+mod spatial;
 use super::{MANIFEST, MANIFEST_VERSION, nofollow_options, read_manifest, read_text, save};
+pub use spatial::Geometry;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self};
@@ -33,6 +35,8 @@ pub struct Board {
     cards: Vec<Card>,
     strings: Vec<[usize; 2]>,
     inbox: Vec<String>,
+    geometry: Geometry,
+    history: std::collections::VecDeque<(Table, Table)>,
 }
 
 impl Drop for Board {
@@ -271,6 +275,8 @@ impl Board {
         let strings = load_strings(&manifest, &cards)?;
         let mut board = Self {
             inbox: Vec::new(),
+            geometry: Geometry::load(&manifest)?,
+            history: Default::default(),
             strings,
             root,
             lock,
@@ -448,10 +454,7 @@ impl Board {
             })
             .collect();
         updated.insert("strings".into(), Value::Array(entries));
-        save(&self.root, &updated)?;
-        self.manifest = updated;
-        self.strings = strings;
-        Ok(())
+        self.commit_layout(updated)
     }
 
     pub fn connect(&mut self, a: usize, b: usize) -> io::Result<()> {
@@ -650,10 +653,7 @@ impl Board {
         let entry = &mut updated["cards"].as_array_mut().unwrap()[index];
         entry["x"] = pos[0].into();
         entry["y"] = pos[1].into();
-        save(&self.root, &updated)?;
-        self.manifest = updated;
-        self.cards[index].position = pos;
-        Ok(())
+        self.commit_layout(updated)
     }
 }
 
