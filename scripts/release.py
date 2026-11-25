@@ -87,6 +87,8 @@ def windows_zip(dest, sha):
             shutil.copy(tool_prefix / "share/doc" / package / "copyright", stage / (package + "-copyright.txt"))
         shutil.copy("scripts/verify-windows.ps1", stage)
         shutil.copy("scripts/verify-text-cards.ps1", stage)
+        shutil.copy("scripts/verify-strings.ps1", stage)
+        shutil.copy("scripts/test-strings-windows.md", stage)
         (stage / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
         archive = Path(scratch) / (name + ".zip")
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
@@ -165,7 +167,7 @@ def verify(binary, sha, target):
             raise SystemExit("Forward migration lost data or repeated a write")
         with subprocess.Popen([binary, "--version-window"], env=env) as window:
             try:
-                response = input(f"Inspect Corktop. If the borderless window shows only {version}, type its displayed version: ")
+                response = input(f"Inspect corktop. If the borderless window shows only {version}, type its displayed version: ")
                 if window.poll() is not None or response.strip() != version:
                     raise SystemExit("Window verification incomplete")
             finally:

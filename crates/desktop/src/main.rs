@@ -45,7 +45,7 @@ fn main() -> ExitCode {
                 ..Default::default()
             };
             if eframe::run_native(
-                "Corktop",
+                "corktop",
                 options,
                 Box::new(|_| Ok(Box::new(VersionWindow))),
             )
@@ -110,7 +110,7 @@ fn board_window(path: Option<std::ffi::OsString>) -> ExitCode {
             .with_inner_size([780.0, 540.0]),
         ..Default::default()
     };
-    if eframe::run_native("Corktop", options, Box::new(move |_| Ok(Box::new(app)))).is_err() {
+    if eframe::run_native("corktop", options, Box::new(move |_| Ok(Box::new(app)))).is_err() {
         return failure("window initialization failed");
     }
     ExitCode::SUCCESS

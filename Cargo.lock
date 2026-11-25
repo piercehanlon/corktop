@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "corktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "corktop-board",
  "eframe",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "corktop-board"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "tempfile",

@@ -26,6 +26,7 @@ pub struct Board {
     lock: File,
     manifest: Table,
     cards: Vec<Card>,
+    strings: Vec<[usize; 2]>,
 }
 
 impl Drop for Board {
@@ -71,6 +72,35 @@ fn valid_position(pos: [i32; 2]) -> io::Result<()> {
     } else {
         Err(invalid("invalid card position"))
     }
+}
+
+// Card indices are local to an open board. Only validated filenames go on disk.
+fn load_strings(manifest: &Table, cards: &[Card]) -> io::Result<Vec<[usize; 2]>> {
+    let Some(value) = manifest.get("strings") else {
+        return Ok(Vec::new());
+    };
+    let entries = value.as_array().ok_or_else(|| invalid("invalid strings"))?;
+    let mut strings = Vec::with_capacity(entries.len());
+    let mut seen = HashSet::new();
+    for entry in entries {
+        let pair = entry
+            .as_array()
+            .filter(|p| p.len() == 2)
+            .ok_or_else(|| invalid("invalid string endpoints"))?;
+        let endpoint = |v: &Value| {
+            cards
+                .iter()
+                .position(|card| Some(card.file.as_str()) == v.as_str())
+                .ok_or_else(|| invalid("unknown string endpoint"))
+        };
+        let mut ends = [endpoint(&pair[0])?, endpoint(&pair[1])?];
+        ends.sort_unstable();
+        if ends[0] == ends[1] || !seen.insert(ends) {
+            return Err(invalid("invalid or duplicate string"));
+        }
+        strings.push(ends);
+    }
+    Ok(strings)
 }
 
 impl Board {
@@ -148,7 +178,9 @@ impl Board {
                 });
             }
         }
+        let strings = load_strings(&manifest, &cards)?;
         Ok(Self {
+            strings,
             root,
             lock,
             manifest,
@@ -158,6 +190,53 @@ impl Board {
 
     pub fn cards(&self) -> &[Card] {
         &self.cards
+    }
+
+    pub fn strings(&self) -> &[[usize; 2]] {
+        &self.strings
+    }
+
+    fn save_strings(&mut self, strings: Vec<[usize; 2]>) -> io::Result<()> {
+        self.check_manifest()?;
+        let mut updated = self.manifest.clone();
+        let entries = strings
+            .iter()
+            .map(|pair| {
+                Value::Array(
+                    pair.iter()
+                        .map(|&i| Value::String(self.cards[i].file.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+        updated.insert("strings".into(), Value::Array(entries));
+        save(&self.root, &updated)?;
+        self.manifest = updated;
+        self.strings = strings;
+        Ok(())
+    }
+
+    pub fn connect(&mut self, a: usize, b: usize) -> io::Result<()> {
+        if a == b || a >= self.cards.len() || b >= self.cards.len() {
+            return Err(invalid("choose two different cards"));
+        }
+        let pair = [a.min(b), a.max(b)];
+        if self.strings.contains(&pair) {
+            return Ok(());
+        }
+        let mut strings = self.strings.clone();
+        strings.push(pair);
+        self.save_strings(strings)
+    }
+
+    pub fn cut(&mut self, a: usize, b: usize) -> io::Result<()> {
+        let pair = [a.min(b), a.max(b)];
+        let Some(index) = self.strings.iter().position(|ends| ends == &pair) else {
+            return Ok(());
+        };
+        let mut strings = self.strings.clone();
+        strings.remove(index);
+        self.save_strings(strings)
     }
 
     fn check_manifest(&self) -> io::Result<()> {
@@ -315,6 +394,86 @@ mod tests {
         reopened.move_card(0, [88, 99]).unwrap();
         drop(reopened);
         assert_eq!(Board::open(&root).unwrap().cards()[0].position, [88, 99]);
+    }
+
+    #[test]
+    fn strings_use_board_filenames_and_preserve_cards() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        fs::write(root.join("first.md"), "First").unwrap();
+        fs::write(root.join("second.md"), "Second").unwrap();
+        fs::write(root.join(MANIFEST), "schema_version=1\n[[cards]]\nfile='first.md'\nx=1\ny=2\n[[cards]]\nfile='second.md'\nx=3\ny=4").unwrap();
+        let mut board = Board::open(root).unwrap();
+        assert!(board.strings().is_empty());
+        assert!(board.connect(0, 0).is_err());
+        board.connect(1, 0).unwrap();
+        board.connect(0, 1).unwrap();
+        board.create("Third", [7, 8]).unwrap();
+        board.connect(1, 2).unwrap();
+        board.move_card(1, [34, 56]).unwrap();
+        drop(board);
+        let mut table = read_manifest(root).unwrap();
+        assert_eq!(table["strings"][0][0].as_str(), Some("first.md"));
+        assert_eq!(table["strings"][0][1].as_str(), Some("second.md"));
+        // Reordering the cards on disk must not retarget their link.
+        table["cards"].as_array_mut().unwrap().reverse();
+        save(root, &table).unwrap();
+        let mut board = Board::open(root).unwrap();
+        assert_eq!(board.strings(), &[[1, 2], [0, 1]]);
+        board.cut(2, 1).unwrap();
+        drop(board);
+        let board = Board::open(root).unwrap();
+        assert_eq!(board.strings(), &[[0, 1]]);
+        assert_eq!(board.cards()[0].text, "Third");
+        assert_eq!(board.cards()[1].text, "Second");
+        assert_eq!(board.cards()[1].position, [34, 56]);
+        assert_eq!(board.cards()[2].text, "First");
+        assert_eq!(board.cards()[2].position, [1, 2]);
+        drop(board);
+        for bad in ["../first.md", "missing.md", "first.md"] {
+            table.insert(
+                "strings".into(),
+                Value::Array(vec![Value::Array(vec!["first.md".into(), bad.into()])]),
+            );
+            save(root, &table).unwrap();
+            assert!(Board::open(root).is_err());
+            assert_eq!(read_manifest(root).unwrap(), table);
+        }
+    }
+
+    #[test]
+    fn interrupted_string_updates() {
+        if let Some(root) = std::env::var_os("CORKTOP_TEST_INTERRUPT_ROOT") {
+            let mut board = Board::open(Path::new(&root)).unwrap();
+            if board.strings().is_empty() {
+                board.connect(0, 1).unwrap();
+            } else {
+                board.cut(0, 1).unwrap();
+            }
+            panic!("save returned despite interruption");
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().canonicalize().unwrap();
+        let mut board = Board::open(&root).unwrap();
+        board.create("Alpha", [10, 20]).unwrap();
+        board.create("Beta", [30, 40]).unwrap();
+        for expected_count in [0, 1] {
+            drop(board);
+            let before = fs::read(root.join(MANIFEST)).unwrap();
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "folder::tests::interrupted_string_updates"])
+                .env("CORKTOP_TEST_INTERRUPT_ROOT", &root)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(73));
+            assert_eq!(fs::read(root.join(MANIFEST)).unwrap(), before);
+            board = Board::open(&root).unwrap();
+            assert_eq!(board.strings().len(), expected_count);
+            assert_eq!(board.cards()[0].text, "Alpha");
+            assert_eq!(board.cards()[1].text, "Beta");
+            board.connect(0, 1).unwrap();
+        }
+        board.cut(0, 1).unwrap();
     }
 
     #[test]

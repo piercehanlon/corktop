@@ -5,9 +5,9 @@ $receipt = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'build.json') -Raw 
 $digest = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($digest -ne $receipt.sha256) { throw 'Installed executable digest mismatch' }
 
-function Invoke-Corktop {
+function Invoke-corktop {
     $text = & $exe @args | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'Corktop self-check failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'corktop self-check failed' }
     $text.Trim()
 }
 
@@ -27,37 +27,37 @@ try {
         $null = [IO.Directory]::CreateDirectory($fresh)
         [Environment]::SetEnvironmentVariable($name, $fresh, 'Process')
     }
-    $id = Invoke-Corktop --identity | ConvertFrom-Json
-    $version = Invoke-Corktop --version
+    $id = Invoke-corktop --identity | ConvertFrom-Json
+    $version = Invoke-corktop --version
     if ($id.commit -ne $receipt.commit -or $id.version -ne $receipt.version -or
         $version -ne $id.version -or $id.target -ne 'x86_64-pc-windows-gnu') {
         throw 'Installed build identity mismatch'
     }
-    if ((Invoke-Corktop --health | ConvertFrom-Json).health -ne 'pass' -or
-        (Invoke-Corktop --ready | ConvertFrom-Json).readiness -ne 'pass') { throw 'Self-check failed' }
+    if ((Invoke-corktop --health | ConvertFrom-Json).health -ne 'pass' -or
+        (Invoke-corktop --ready | ConvertFrom-Json).readiness -ne 'pass') { throw 'Self-check failed' }
     $board = Join-Path $root 'board'
-    $first = Invoke-Corktop --probe $board
+    $first = Invoke-corktop --probe $board
     $marker = 'corktop-gate-2-fixture'
     $result = $first | ConvertFrom-Json
     $manifest = Join-Path $board '.board.toml'
     $state = Get-BoardState $board
     if ($result.marker -ne $marker -or $result.schema_version -ne 1 -or
-        (Invoke-Corktop --probe $board) -ne $first -or (Get-BoardState $board) -ne $state) {
+        (Invoke-corktop --probe $board) -ne $first -or (Get-BoardState $board) -ne $state) {
         throw 'Repeat persistence probe failed'
     }
     [IO.File]::WriteAllText($manifest, "schema_version=0`nmarker=`"$marker`"`nextra=37`n")
-    if ((Invoke-Corktop --probe $board) -ne $first) { throw 'Migration failed' }
+    if ((Invoke-corktop --probe $board) -ne $first) { throw 'Migration failed' }
     $text = [IO.File]::ReadAllText($manifest)
     $state = Get-BoardState $board
     if ($text -notmatch '(?m)^schema_version\s*=\s*1\s*$' -or
         $text -notmatch '(?m)^extra\s*=\s*37\s*$' -or
         $text -notmatch '(?m)^marker\s*=\s*"corktop-gate-2-fixture"\s*$' -or
-        (Invoke-Corktop --probe $board) -ne $first -or (Get-BoardState $board) -ne $state) {
+        (Invoke-corktop --probe $board) -ne $first -or (Get-BoardState $board) -ne $state) {
         throw 'Migrated state mismatch'
     }
     $window = Start-Process -FilePath $exe -ArgumentList "--version-window" -PassThru
     try {
-        $answer = Read-Host "Inspect the borderless Corktop window and type the only text it displays"
+        $answer = Read-Host "Inspect the borderless corktop window and type the only text it displays"
         if ($window.HasExited -or $answer -ne $version) { throw 'Window check incomplete' }
     } finally {
         if (!$window.HasExited) { $window.Kill(); $window.WaitForExit() }
