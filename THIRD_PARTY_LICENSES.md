@@ -1,5 +1,6 @@
-# Bundled typeface notices
+# Third-party licenses
 
+The font notices below cover the typefaces embedded in corktop. Each release archive also includes dependency notices in `THIRD-PARTY.txt` and Rust standard-library notices in `COPYRIGHT-library.html` and `rust-licenses/`.
 
 ## Permanent Marker
 

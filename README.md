@@ -2,6 +2,18 @@
 
 corktop turns a folder into a desktop corkboard. Pin notes, screenshots, links, and files side by side. Pull a thread between two cards to show a connection. When you close the board, your notes are still Markdown files you can open in any editor.
 
+![North Point light investigation with a pinned tide-gauge image and three notes connected by red yarn inside the Night watch zone.](media/north-point-hero.png)
+
+## Highlights
+
+- Choose from five material kits, from Classic Cork to Blueprint, and customize the paper, yarn, and fasteners.
+- Make **Magic String Zones** by connecting tacks in a loop. Move the group by its label or arrange the cards in a grid, ring, web, or stack.
+- Use the interactive desktop layer on Windows, X11, and Wayland compositors with layer-shell support.
+- Export a board as a portable folder. Preview what travels and choose whether to include copies of linked files.
+- True Believer Mode is off by default. Every so often, it has a 42-millisecond observation to share.
+
+## See it in action
+
 | Write and save a note | Connect two cards |
 | --- | --- |
 | [![Typing a Markdown note on the board and saving it as a card](media/write-a-note.gif)](media/write-a-note.mp4) | [![Dragging yarn from one card’s pinhead to another card](media/connect-cards.gif)](media/connect-cards.mp4) |
@@ -77,6 +89,12 @@ python3 scripts/release.py --packages target/downloads
 
 The command builds Linux in Ubuntu 22.04, launches the extracted archive in a fresh Ubuntu 22.04 userspace, cross-builds Windows, and writes both archives with their notices and a shared `SHA256SUMS` file.
 
+## Project scope
+
+corktop 1.0 is feature-complete for its intended scope and shared as-is under MIT. Bug reports are welcome. Forks are the best place to explore new features and specialized platform support.
+
 ## License
 
-corktop uses the MIT license. Bundled fonts have their own licenses. [MIT license](LICENSE) · [Font notices](THIRD_PARTY_LICENSES.md)
+corktop uses the MIT license. Bundled fonts have their own licenses. [MIT license](LICENSE) · [Font notices](THIRD_PARTY_LICENSES.md#permanent-marker) · [Third-party licenses](THIRD_PARTY_LICENSES.md)
+
+Creator: [https://pah.moi](https://pah.moi)
