@@ -29,7 +29,10 @@ fn rail_button(
     }
     let c = rect.center();
     let p = ui.painter();
-    let stroke = egui::Stroke::new(1.5, Color32::from_gray(223));
+    let stroke = egui::Stroke::new(
+        1.5,
+        Color32::from_gray(if ui.is_enabled() { 223 } else { 143 }),
+    );
     let line = |a: [f32; 2], b: [f32; 2]| {
         p.line_segment([c + Vec2::from(a), c + Vec2::from(b)], stroke);
     };
@@ -205,6 +208,16 @@ impl BoardWindow {
                                     {
                                         self.error = e.to_string();
                                     }
+                                });
+                            } else {
+                                ui.add_enabled_ui(false, |ui| {
+                                    rail_button(
+                                        ui,
+                                        RailIcon::Inbox,
+                                        "Inbox is empty",
+                                        width,
+                                        false,
+                                    );
                                 });
                             }
                             if rail_button(
