@@ -1233,9 +1233,13 @@ impl Canvas {
             );
         }
         self.show_strings(ui, &rects, origin, scale, style, extent)?;
+        let moving_tack = matches!(self.spatial.placement, spatial::Placement::Move(_));
         self.spatial
             .show(&mut self.board, ui, origin, scale, &background, style)?;
-        if self.spatial.relocate.is_none() {
+        if moving_tack || matches!(self.spatial.placement, spatial::Placement::Move(_)) {
+            return Ok(());
+        }
+        {
             let pins = self
                 .board
                 .geometry()
@@ -1291,7 +1295,9 @@ impl Canvas {
                 }
             });
             if add_pin {
-                self.board.add_pin(self.menu_pin_position)?;
+                self.spatial.placement = spatial::Placement::Idle;
+                let id = self.board.add_pin(self.menu_pin_position)?;
+                spatial::trace_tack("board menu add", id, self.menu_pin_position);
             }
             if paste {
                 self.images.paste_menu(
@@ -1605,7 +1611,7 @@ impl Canvas {
     ) -> std::io::Result<()> {
         let pointer = ui.input(|i| i.pointer.interact_pos());
 
-        let right_click = self.spatial.relocate.is_none()
+        let right_click = self.spatial.placement == spatial::Placement::Idle
             && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
             && ui.ui_contains_pointer()
             && self.draft.is_none();
@@ -1622,7 +1628,7 @@ impl Canvas {
         let g = self.board.geometry();
         let pin = |i: usize| {
             let pos = origin + offset(g.pins[i]) * scale;
-            if self.spatial.relocate == Some(i) {
+            if self.spatial.placement == spatial::Placement::Move(i) {
                 pointer.unwrap_or(pos)
             } else {
                 pos

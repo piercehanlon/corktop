@@ -2,12 +2,31 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct Spatial {
-    pub placing: bool,
+    pub(super) placement: Placement,
     drag: Option<PinDrag>,
-    pub(super) relocate: Option<usize>,
     rename: Option<(usize, String)>,
     zone_origin: Option<(usize, Pos2, Vec2)>,
     naming: Option<(Vec<usize>, String)>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+pub(super) enum Placement {
+    #[default]
+    Idle,
+    New,
+    Move(usize),
+}
+
+pub(super) fn trace_tack(action: &str, id: usize, pos: [i32; 2]) {
+    use std::io::Write;
+    if let Some(path) = std::env::var_os("CORKTOP_VERIFY_TACK_LOG")
+        && let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    {
+        let _ = writeln!(log, "{action} tack {id} at {},{}", pos[0], pos[1]);
+    }
 }
 
 struct PinDrag {
@@ -30,46 +49,46 @@ impl Spatial {
         let extent = background.rect.size() / scale;
         let pointer = ui.input(|i| i.pointer.interact_pos());
 
-        if self.relocate.is_some() {
-            self.placing = false;
-            self.drag = None;
+        if self.placement == Placement::New {
+            if ui.input(|i| {
+                i.pointer.secondary_pressed()
+                    || i.key_pressed(Key::Escape)
+                    || i.modifiers.command
+                    || i.modifiers.ctrl
+            }) {
+                self.placement = Placement::Idle;
+            } else if background.clicked()
+                && let Some(p) = background.interact_pointer_pos()
+            {
+                self.placement = Placement::Idle;
+                let pos = logical(((p - origin) / scale).min(extent - vec2(6., 6.)));
+                let id = board.add_pin(pos)?;
+                trace_tack("toolbar add", id, pos);
+            } else if background.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
         }
-        if self.placing
-            && ui.input(|i| i.key_pressed(Key::Escape) || i.modifiers.command || i.modifiers.ctrl)
-        {
-            self.placing = false;
-        }
-        if self.placing && background.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-        }
-        if self.placing
-            && background.clicked()
-            && let Some(p) = pointer
-        {
-            board.add_pin(logical(((p - origin) / scale).min(extent - vec2(6.0, 6.0))))?;
-            self.placing = false;
-        }
-        let relocating = self.relocate;
         let geometry = board.geometry();
         let points: Vec<_> = geometry
             .pins
             .iter()
             .enumerate()
             .map(|(i, p)| {
-                if relocating == Some(i) {
+                if self.placement == Placement::Move(i) {
                     pointer.unwrap_or(origin + offset(*p) * scale)
                 } else {
                     origin + offset(*p) * scale
                 }
             })
             .collect();
-        if let Some(id) = relocating {
+        if let Placement::Move(id) = self.placement {
+            self.drag = None;
             for &p in &points {
                 style.pin(ui.painter(), p);
             }
             let target = ui.interact(
                 background.rect.intersect(ui.clip_rect()),
-                ui.id().with("place-moving-tack"),
+                ui.id().with("tack-placement"),
                 Sense::click(),
             );
             if let Some(p) = pointer.filter(|p| target.rect.contains(*p)) {
@@ -81,16 +100,15 @@ impl Spatial {
                         .line_segment([p + d * 10., p + d * 18.], stroke);
                 }
             }
-            if ui.input(|i| i.pointer.secondary_pressed() || i.key_pressed(Key::Escape)) {
-                self.relocate = None;
+            if ui.input(|i| i.pointer.secondary_clicked() || i.key_pressed(Key::Escape)) {
+                self.placement = Placement::Idle;
             } else if target.clicked()
                 && let Some(p) = target.interact_pointer_pos()
             {
-                board.move_pin(
-                    id,
-                    logical(((p - origin) / scale).min(extent - vec2(6., 6.))),
-                )?;
-                self.relocate = None;
+                let pos = logical(((p - origin) / scale).min(extent - vec2(6., 6.)));
+                self.placement = Placement::Idle;
+                board.move_pin(id, pos)?;
+                trace_tack("move", id, pos);
             }
             return Ok(());
         }
@@ -203,9 +221,9 @@ impl Spatial {
             }
             pin.context_menu(|ui| {
                 if ui.button("Move tack").clicked() {
-                    self.placing = false;
                     self.drag = None;
-                    self.relocate = Some(id);
+                    self.placement = Placement::Move(id);
+                    trace_tack("begin move", id, geometry.pins[id]);
                     ui.close();
                 }
                 if ui.button("Delete tack").clicked() {
