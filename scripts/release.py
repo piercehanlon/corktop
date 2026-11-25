@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
+import zipfile
 
 
 def output(*cmd, env=None):
@@ -42,7 +43,7 @@ def notices(dest, target):
             print(file=stream)
 
 
-def install(dest, sha, target):
+def build(sha, target, exe, env=None):
     if output("git", "status", "--porcelain") or sha != output("git", "rev-parse", "origin/main"):
         raise SystemExit("Install requires a clean checkout at the fetched origin/main")
     versions = tomllib.loads(Path("tools.lock.toml").read_text())["versions"]
@@ -50,8 +51,56 @@ def install(dest, sha, target):
         if output(tool, "--version").split()[1] != versions[tool]:
             raise SystemExit(f"Check the pinned {tool} toolchain")
     subprocess.run(["cargo", "build", "--release", "--locked", "-j", "2", "--target",
-                    target, "--target-dir", "target", "-p", "corktop"], check=True)
-    binary = Path("target") / target / "release" / exe
+                    target, "--target-dir", "target", "-p", "corktop"], check=True, env=env)
+    return Path("target") / target / "release" / exe
+
+
+def windows_zip(dest, sha):
+    if platform.system() != "Linux":
+        raise SystemExit("Build the Windows GNU ZIP on Linux")
+    config = tomllib.loads(Path("tools.lock.toml").read_text())["windows_cross"]
+    target = config["target"]
+    gcc = "x86_64-w64-mingw32-gcc-posix"
+    objdump = "x86_64-w64-mingw32-objdump"
+    if (output(gcc, "-dumpfullversion") != config["gcc"] or
+            output(objdump, "--version").splitlines()[0].split()[-1] != config["binutils"]):
+        raise SystemExit("MinGW-w64 tool versions differ from tools.lock.toml")
+    env = dict(os.environ, CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc)
+    binary = build(sha, target, "corktop.exe", env)
+    headers = output(objdump, "-p", binary)
+    if "pei-x86-64" not in headers or "(Windows GUI)" not in headers:
+        raise SystemExit("Expected an AMD64 Windows GUI executable")
+    imports = re.findall(r"DLL Name: (\S+)", headers, re.I)
+    if not imports or any(dll.lower().startswith(("libgcc", "libstdc", "libwinpthread")) for dll in imports):
+        raise SystemExit(f"Check Windows runtime DLLs: {imports}")
+    version = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
+    receipt = dict(version=version, commit=sha, target=target, sha256=digest(binary))
+    name = f"corktop-{version}-windows-x64-{sha[:12]}"
+    dest.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest) as scratch:
+        stage = Path(scratch) / name
+        stage.mkdir()
+        shutil.copyfile(binary, stage / "corktop.exe")
+        notices(stage, target)
+        tool_prefix = Path(shutil.which(gcc)).resolve().parents[1]
+        for package in ("gcc-mingw-w64-base", "mingw-w64-common"):
+            shutil.copy(tool_prefix / "share/doc" / package / "copyright", stage / (package + "-copyright.txt"))
+        shutil.copy("scripts/verify-windows.ps1", stage)
+        (stage / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        archive = Path(scratch) / (name + ".zip")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for path in sorted(stage.rglob("*")):
+                if path.is_file():
+                    bundle.write(path, path.relative_to(stage.parent))
+        with zipfile.ZipFile(archive) as bundle:
+            if bundle.testzip() or hashlib.sha256(bundle.read(name + "/corktop.exe")).hexdigest() != receipt["sha256"]:
+                raise SystemExit("Windows ZIP integrity check failed")
+        archive.replace(dest / archive.name)
+    print(json.dumps(dict(**receipt, zip=name + ".zip", zip_sha256=digest(dest / (name + ".zip")))))
+
+
+def install(dest, sha, target):
+    binary = build(sha, target, exe)
     identity = json.loads(output(binary, "--identity"))
     if identity["commit"] != sha or identity["target"] != target:
         raise SystemExit("Release identity mismatch")
@@ -130,11 +179,15 @@ if __name__ == "__main__":
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--install", type=Path, metavar="VERSION_DIRECTORY")
     action.add_argument("--verify", type=Path, metavar="INSTALLED_BINARY")
+    action.add_argument("--windows-zip", type=Path, metavar="OUTPUT_DIRECTORY")
     args = parser.parse_args()
     exe = "corktop.exe" if os.name == "nt" else "corktop"
     sha = output("git", "rev-parse", "HEAD")
     if sha != output("git", "rev-parse", "origin/main"):
         raise SystemExit("Check out the fetched main revision")
+    if args.windows_zip:
+        windows_zip(args.windows_zip.resolve(), sha)
+        raise SystemExit(0)
     target = re.search(r"^host: (.+)$", output("rustc", "-vV"), re.M)[1]
     if (platform.system(), target) not in {("Windows", "x86_64-pc-windows-msvc"),
                                            ("Linux", "x86_64-unknown-linux-gnu")}:

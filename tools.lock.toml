@@ -6,3 +6,8 @@ clippy = "0.1.90"
 make = "4.3"
 gitleaks = "8.24.3"
 cargo-deny = "0.22.1"
+
+[windows_cross]
+target = "x86_64-pc-windows-gnu"
+gcc = "13-posix"
+binutils = "2.45.90.20260125"
