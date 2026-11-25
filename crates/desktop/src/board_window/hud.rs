@@ -189,11 +189,16 @@ impl BoardWindow {
                                 RailIcon::Pin,
                                 "Place bare tack",
                                 width,
-                                canvas.spatial.placing,
+                                canvas.spatial.placement == spatial::Placement::New,
                             )
                             .clicked()
                             {
-                                canvas.spatial.placing = !canvas.spatial.placing;
+                                canvas.spatial.placement =
+                                    if canvas.spatial.placement == spatial::Placement::New {
+                                        spatial::Placement::Idle
+                                    } else {
+                                        spatial::Placement::New
+                                    };
                             }
                             let available = ui.available_rect_before_wrap();
                             #[cfg(windows)]

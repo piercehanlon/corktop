@@ -50,6 +50,8 @@ try {
     # Use a new profile for setup after the compatibility tests.
     $env:LOCALAPPDATA = Join-Path $root 'Setup profile'
     $null = [IO.Directory]::CreateDirectory($env:LOCALAPPDATA)
+    $previous['CORKTOP_VERIFY_TACK_LOG'] = $env:CORKTOP_VERIFY_TACK_LOG
+    $env:CORKTOP_VERIFY_TACK_LOG = Join-Path $root 'tack-actions.log'
     $note = Join-Path $board 'Witness.md'
     $utf8 = New-Object Text.UTF8Encoding($false)
     $manifest = Join-Path $board '.board.toml'
@@ -158,9 +160,9 @@ try {
         } else { Write-Host "Earlier board unavailable at $PriorBoard. Continuing with the copied board." }
     }
     $before = Read-MoveSnapshot 'before' $board
-    Confirm-Step 'Right-click one existing bare tack, choose Move tack, then click a different location. Move the pointer away and click blank cork. Did only the original tack move?'
-    $after = Read-MoveSnapshot 'after' $board
-    if ($before.geometry.pins.Count -ne $after.geometry.pins.Count) { throw "Tack count changed. Compare move-before.json and move-after.json under $root" }
+    Confirm-Step 'Right-click one existing bare tack, choose Move tack, then left-click a different location to set it down. Did that tack move?'
+    $after = Read-MoveSnapshot 'placed' $board
+    if ($before.geometry.pins.Count -ne $after.geometry.pins.Count) { throw "Tack count changed. Compare move-before.json and move-placed.json under $root" }
     $moved = 0
     for ($i = 0; $i -lt $before.geometry.pins.Count; $i++) {
         if ($before.geometry.pins[$i][0] -ne $after.geometry.pins[$i][0] -or $before.geometry.pins[$i][1] -ne $after.geometry.pins[$i][1]) { $moved++ }
@@ -172,6 +174,11 @@ try {
         if ($old -cne $new) { throw "Saved $field changed from $old to $new" }
     }
     if ((ConvertTo-Json -InputObject $before.strings -Depth 8 -Compress) -cne (ConvertTo-Json -InputObject $after.strings -Depth 8 -Compress)) { throw "Card-to-card strings changed. Snapshots retained under $root" }
+    Confirm-Step 'Now single-click blank cork once. Did it stay empty?'
+    $blank = Read-MoveSnapshot 'after' $board
+    if ((ConvertTo-Json $blank -Depth 12 -Compress) -cne (ConvertTo-Json $after -Depth 12 -Compress)) {
+        throw "Blank click changed the saved layout. Compare move-placed.json and move-after.json under $root"
+    }
     Confirm-Step 'Double-click empty top bar space to maximize. Did the window maximize?'
     Confirm-Step 'Double-click empty top bar space again. Did the window return to its previous size and position?'
     Confirm-Step 'In Settings > Board, does the folder show a normal drive or network-share path?'
@@ -193,6 +200,8 @@ try {
         named_zone=$(if ($ResumeDesktop) {'previous RC6 run'} else {'pass'}); desktop=$desktop; tray='pass'; reopen='pass'} | ConvertTo-Json -Depth 4 -Compress
 } finally {
     if ($app) { try { if (!$app.HasExited) { $app.Kill(); $app.WaitForExit() } } catch [System.InvalidOperationException] {} }
+    $trace = Join-Path $root 'tack-actions.log'
+    if (Test-Path -LiteralPath $trace) { Get-Content -LiteralPath $trace | ForEach-Object { Write-Host $_ } }
     foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
     Write-Host "Test boards retained at $root"
 }
