@@ -55,6 +55,7 @@ impl Spatial {
             );
         }
         let mut moved_zone = None;
+        let mut format_zone = None;
         for (i, z) in geometry.zones.iter().enumerate() {
             let center = origin + offset(geometry.center(i));
             let label = ui.painter().text(
@@ -65,6 +66,19 @@ impl Spatial {
                 Color32::WHITE,
             );
             let response = ui.interact(label.expand(4.0), ui.id().with(("zone", i)), Sense::drag());
+            response.context_menu(|ui| {
+                for mode in [
+                    "Grid / Rows",
+                    "Circle / Ring",
+                    "Web / Untangle",
+                    "Compact Stack",
+                ] {
+                    if ui.button(mode).clicked() {
+                        format_zone = Some((i, mode));
+                        ui.close();
+                    }
+                }
+            });
             if response.drag_stopped()
                 && let Some(delta) = ui.input(|i| {
                     i.pointer
@@ -96,6 +110,9 @@ impl Spatial {
                 });
                 ui.ctx().request_repaint_after(Duration::from_millis(200));
             }
+        }
+        if let Some((zone, mode)) = format_zone {
+            board.format_zone(zone, mode)?;
         }
         if let Some((zone, delta)) = moved_zone {
             board.move_zone(zone, delta)?;

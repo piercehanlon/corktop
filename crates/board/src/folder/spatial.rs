@@ -243,6 +243,124 @@ impl Board {
     }
 }
 
+impl Board {
+    pub fn format_zone(&mut self, index: usize, mode: &str) -> io::Result<()> {
+        let zone = self
+            .geometry
+            .zones
+            .get(index)
+            .ok_or_else(|| invalid("unknown zone"))?;
+        let ids: Vec<_> = self
+            .cards
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                self.geometry
+                    .contains(index, [c.position[0] + 110, c.position[1] + 56])
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let points: Vec<_> = zone.pins.iter().map(|&p| self.geometry.pins[p]).collect();
+        let min: Point = std::array::from_fn(|a| points.iter().map(|p| p[a]).min().unwrap());
+        let max: Point = std::array::from_fn(|a| points.iter().map(|p| p[a]).max().unwrap());
+        let center = self.geometry.center(index);
+        let w = (max[0] - min[0]) as f64;
+        let h = (max[1] - min[1]) as f64;
+        let n = ids.len();
+        let cols = ((n as f64 * w / h.max(1.0)).sqrt().ceil() as usize).clamp(1, n);
+        let rows = n.div_ceil(cols);
+        let mut centers = Vec::with_capacity(n);
+        for (i, &id) in ids.iter().enumerate() {
+            let angle = std::f64::consts::TAU * i as f64 / n as f64;
+            let p = match mode {
+                "Grid / Rows" => [
+                    min[0] as f64 + w * ((i % cols) as f64 + 0.5) / cols as f64,
+                    min[1] as f64 + h * ((i / cols) as f64 + 0.5) / rows as f64,
+                ],
+                "Circle / Ring" => [
+                    center[0] as f64 + (w * 0.5 - 115.0).max(0.0) * angle.cos(),
+                    center[1] as f64 + (h * 0.5 - 62.0).max(0.0) * angle.sin(),
+                ],
+                "Compact Stack" => [
+                    center[0] as f64 + (i as f64 - (n - 1) as f64 / 2.0) * 6.0,
+                    center[1] as f64 + (i as f64 - (n - 1) as f64 / 2.0) * 8.0,
+                ],
+                "Web / Untangle" => [
+                    f64::from(self.cards[id].position[0] + 110),
+                    f64::from(self.cards[id].position[1] + 56),
+                ],
+                _ => return Err(invalid("unknown layout")),
+            };
+            centers.push(p);
+        }
+        if mode == "Web / Untangle" {
+            let local: std::collections::HashMap<_, _> = ids
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, id)| (id, i))
+                .collect();
+            for _ in 0..24 {
+                let mut forces = vec![[0.0; 2]; n];
+                for i in 0..n {
+                    for j in i + 1..n {
+                        let mut dx = centers[i][0] - centers[j][0];
+                        let dy = centers[i][1] - centers[j][1];
+                        if dx.abs() + dy.abs() < 0.01 {
+                            dx = 1.0;
+                        }
+                        let d2 = (dx * dx + dy * dy).max(1.0);
+                        let force = (10000.0 / d2).min(10.0) / d2.sqrt();
+                        for (axis, v) in [dx, dy].iter().enumerate() {
+                            forces[i][axis] += force * v;
+                            forces[j][axis] -= force * v;
+                        }
+                    }
+                }
+                for [a, b] in &self.strings {
+                    if let (Some(&i), Some(&j)) = (local.get(a), local.get(b)) {
+                        let dx = centers[j][0] - centers[i][0];
+                        let dy = centers[j][1] - centers[i][1];
+                        let d = dx.hypot(dy).max(1.0);
+                        let force = (d - 230.0) * 0.025 / d;
+                        for (axis, v) in [dx, dy].iter().enumerate() {
+                            forces[i][axis] += force * v;
+                            forces[j][axis] -= force * v;
+                        }
+                    }
+                }
+                for (p, force) in centers.iter_mut().zip(forces) {
+                    for axis in 0..2 {
+                        p[axis] += force[axis].clamp(-10.0, 10.0);
+                    }
+                }
+            }
+        }
+        let mut next = self.manifest.clone();
+        for (&i, p) in ids.iter().zip(centers) {
+            let mut point = p.map(|v| v.round() as i32);
+            // Interpolate toward the original interior position for concave zones.
+            let original = [
+                self.cards[i].position[0] + 110,
+                self.cards[i].position[1] + 56,
+            ];
+            for _ in 0..24 {
+                if self.geometry.contains(index, point) {
+                    break;
+                }
+                point = std::array::from_fn(|a| (point[a] + original[a]) / 2);
+            }
+            let entry = &mut next["cards"].as_array_mut().unwrap()[i];
+            entry["x"] = (point[0] - 110).max(0).into();
+            entry["y"] = (point[1] - 56).max(0).into();
+        }
+        self.commit_layout(next)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +382,23 @@ mod tests {
         assert!(b.undo_layout().unwrap());
         assert_eq!(b.cards()[0].position, [12, 12]);
         assert_eq!(b.geometry().pins[0], [0, 0]);
+        for mode in [
+            "Grid / Rows",
+            "Circle / Ring",
+            "Compact Stack",
+            "Web / Untangle",
+        ] {
+            b.format_zone(0, mode).unwrap();
+            assert!(b.geometry().contains(
+                0,
+                [
+                    b.cards()[0].position[0] + 110,
+                    b.cards()[0].position[1] + 56
+                ]
+            ));
+            assert!(b.undo_layout().unwrap());
+            assert_eq!(b.cards()[0].position, [12, 12]);
+        }
         b.connect(0, 1).unwrap();
         b.cut(0, 1).unwrap();
         assert!(b.undo_layout().unwrap());
