@@ -1,14 +1,5 @@
 use super::*;
 
-pub(super) const THREADS: [Color32; 6] = [
-    Color32::from_rgb(218, 83, 73),
-    Color32::from_rgb(69, 137, 188),
-    Color32::from_rgb(82, 148, 96),
-    Color32::from_rgb(202, 155, 65),
-    Color32::from_rgb(159, 104, 171),
-    Color32::from_rgb(199, 198, 184),
-];
-
 #[derive(Default)]
 pub(super) struct Spatial {
     pub placing: bool,
@@ -32,6 +23,7 @@ impl Spatial {
         origin: Pos2,
         scale: f32,
         background: &egui::Response,
+        style: &material::Style,
     ) -> std::io::Result<()> {
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let now = ui.input(|i| i.time);
@@ -107,10 +99,7 @@ impl Spatial {
                 ui.id().with(("bare-tack", id)),
                 Sense::drag(),
             );
-            ui.painter()
-                .circle_filled(p, 6.0, Color32::from_rgb(151, 106, 52));
-            ui.painter()
-                .circle_filled(p - vec2(1.2, 1.2), 2.3, Color32::from_rgb(239, 197, 119));
+            style.pin(ui.painter(), p);
             if ui.ui_contains_pointer()
                 && pointer.is_some_and(|at| at.distance(p) <= 11.0)
                 && ui.input(|i| i.pointer.primary_pressed())
@@ -150,7 +139,7 @@ impl Spatial {
                 }
                 ui.painter().line_segment(
                     [drag.origin, p],
-                    egui::Stroke::new(2.5, THREADS[drag.color]),
+                    egui::Stroke::new(2.5, style.thread(drag.color)),
                 );
             } else if drag.moving {
                 ui.painter().circle_filled(p, 6.0, Color32::LIGHT_YELLOW);

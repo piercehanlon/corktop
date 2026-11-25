@@ -2,8 +2,14 @@ use corktop_board::Board;
 use eframe::egui::{self, Color32, Key, Pos2, Rect, Sense, Vec2, vec2};
 use std::{path::Path, time::Duration};
 
+mod fonts;
+mod hud;
 mod images;
+mod list;
+mod material;
+mod onboarding;
 mod opener;
+mod placard;
 mod spatial;
 
 const CARD_SIZE: Vec2 = vec2(220.0, 112.0);
@@ -37,6 +43,7 @@ struct Canvas {
     display_only: bool,
     link_drops: bool,
     images: images::Images,
+    reveal: Option<(String, std::time::Instant, bool)>,
     pasted_text: bool,
     typed_v: bool,
     next_refresh: std::time::Instant,
@@ -55,6 +62,10 @@ struct Canvas {
 pub struct BoardWindow {
     pub control: Option<crate::shell::control::Control>,
     pub panel: bool,
+    placard: placard::Placard,
+    materials: material::Materials,
+    fonts_dirty: bool,
+    smart_until: Option<std::time::Instant>,
     #[cfg(target_os = "linux")]
     pub change_host: bool,
     #[cfg(target_os = "linux")]
@@ -62,6 +73,10 @@ pub struct BoardWindow {
     #[cfg(windows)]
     tray: Option<crate::shell::tray::Handle>,
     showing_settings: bool,
+    show_bin: bool,
+    setup: onboarding::Setup,
+    tutorial: bool,
+    flat_list: Option<list::FlatList>,
     picker_open: bool,
     hidden: bool,
     pub machine: crate::shell::MachineState,
@@ -81,6 +96,10 @@ impl BoardWindow {
     }
 
     pub fn attach(&mut self, ctx: &egui::Context) {
+        fonts::install(ctx, self.materials.custom_font.clone());
+        self.fonts_dirty = false;
+        self.materials.reset();
+        self.placard.invalidate();
         for canvas in self.parents.iter_mut().chain(self.canvas.iter_mut()) {
             canvas.images.reset_textures();
         }
@@ -205,6 +224,42 @@ impl BoardWindow {
         }
     }
 
+    fn reveal_card(&mut self, board: &Path, file: String) -> std::io::Result<()> {
+        let Some(current) = &self.canvas else {
+            return Ok(());
+        };
+        let root = current.board.root();
+        let rel = board.strip_prefix(root).map_err(std::io::Error::other)?;
+        let mut path = root.to_owned();
+        let mut chain = Vec::new();
+        for part in rel.components() {
+            let std::path::Component::Normal(name) = part else {
+                return Err(std::io::Error::other("invalid child folder"));
+            };
+            path.push(name);
+            if !path.symlink_metadata()?.is_dir() {
+                return Err(std::io::Error::other("folder moved"));
+            }
+            if path.join(".board.toml").try_exists()? {
+                chain.push(Board::open(&path)?);
+            }
+        }
+        let target = chain.last().unwrap_or(&current.board);
+        if target.root() != board || !target.cards().iter().any(|c| c.file == file) {
+            return Err(std::io::Error::other("card moved since search"));
+        }
+        for board in chain {
+            self.parents.push(self.canvas.take().unwrap());
+            self.show_board(Ok(board));
+        }
+        self.canvas.as_mut().unwrap().reveal = Some((
+            file,
+            std::time::Instant::now() + Duration::from_millis(1100),
+            true,
+        ));
+        Ok(())
+    }
+
     pub fn open(&mut self, path: &Path) {
         match Board::open(path) {
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
@@ -219,7 +274,26 @@ impl BoardWindow {
 
     fn show_root(&mut self, result: std::io::Result<Board>) {
         let result = result.and_then(|board| {
-            let preferences = corktop_board::Preferences::load(board.root())?;
+            let mut preferences = corktop_board::Preferences::load(board.root())?;
+            if self.setup.active {
+                if self.setup.styled {
+                    preferences.store("appearance", &self.setup.style)?;
+                }
+                if let Some(link) = self.setup.links {
+                    preferences.set("link_file_drops", link.into())?;
+                }
+                if preferences.get::<bool>("tutorial_seen")?.is_none() {
+                    preferences.set("tutorial_seen", false.into())?;
+                }
+                self.setup = Default::default();
+            }
+            self.tutorial = !preferences.flag("tutorial_seen", true);
+            self.materials.style = preferences.get("appearance")?.unwrap_or_default();
+            self.materials.files = preferences.override_files().unwrap_or_default();
+            if let Err(e) = self.materials.load_assets(&preferences) {
+                eprintln!("Appearance override: {e}");
+            }
+            self.fonts_dirty = true;
             self.preferences = Some(preferences);
             self.parents.clear();
             Ok(board)
@@ -242,6 +316,7 @@ impl BoardWindow {
                     display_only: false,
                     link_drops: false,
                     images: Default::default(),
+                    reveal: None,
                     pasted_text: false,
                     typed_v: false,
                     next_refresh: std::time::Instant::now(),
@@ -254,6 +329,7 @@ impl BoardWindow {
                     paste_at: None,
                 });
                 self.occupied = None;
+                self.flat_list = None;
                 self.error.clear();
             }
             Err(e) => self.error = format!("Could not open folder: {e}"),
@@ -302,88 +378,74 @@ impl BoardWindow {
                 .or(self.canvas.as_ref())
                 .map(|c| c.board.root()),
         );
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let title = ui.heading("corktop").interact(Sense::drag());
-                if title.drag_started() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
-
-                if !self.parents.is_empty() && ui.button("Parent folder").clicked() {
-                    self.canvas = self.parents.pop();
-                }
-                if let Some(canvas) = self.canvas.as_mut() {
-                    ui.separator();
-                    if let Some(prefs) = self.preferences.as_mut() {
-                        if ui.button("Settings").clicked() {
-                            self.showing_settings = true;
-                        }
-                        canvas.display_only = prefs.flag("display_only_titles", false);
-                        canvas.link_drops = prefs.flag("link_file_drops", false);
-                    }
-                    if ui
-                        .selectable_label(canvas.spatial.placing, "Pin")
-                        .on_hover_text("Place a bare tack on the board")
-                        .clicked()
-                    {
-                        canvas.spatial.placing = !canvas.spatial.placing;
-                    }
-                    let trash = canvas.board.trashed_files();
-                    if !trash.is_empty() {
-                        ui.menu_button("Recycle bin", |ui| {
-                            if ui.button("Empty bin…").clicked() {
-                                canvas.confirm_empty = true;
-                                ui.close();
-                            }
-                            for name in trash {
-                                if ui.button(format!("Restore {name}")).clicked() {
-                                    if let Err(e) = canvas.board.restore(&name) {
-                                        self.error = e.to_string();
-                                    }
-                                    ui.close();
-                                }
-                            }
-                        });
-                    }
-                    let count = canvas.board.inbox().len();
-                    if count > 0 {
-                        let mut pin = None;
-                        ui.menu_button(format!("Inbox (+{count})"), |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(260.0)
-                                .show(ui, |ui| {
-                                    for name in canvas.board.inbox() {
-                                        if ui.button(name).clicked() {
-                                            pin = Some(name.clone());
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                        });
-                        if let Some(file) = pin
-                            && let Err(e) = canvas.board.pin_files(&[file])
-                        {
-                            self.error = e.to_string();
-                        }
-                    } else {
-                        ui.label("Double-click to write a note. Drag a card to move it.");
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        if self.fonts_dirty {
+            fonts::install(ctx, self.materials.custom_font.clone());
+            self.placard.invalidate();
+            self.fonts_dirty = false;
+        }
+        let enabled = self.canvas.is_some()
+            && self
+                .preferences
+                .as_ref()
+                .is_some_and(|p| p.flag("true_believer_mode", true));
+        let visible = !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if self.placard.show(ctx, enabled && visible) {
+            return;
+        }
+        if self.canvas.is_some() && self.occupied.is_none() {
+            self.hud(ctx);
+        }
+        if !self.error.is_empty() {
+            egui::TopBottomPanel::bottom("board-error").show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, &self.error);
+                    if ui.small_button("Dismiss").clicked() {
+                        self.error.clear();
                     }
                 });
             });
-            if !self.error.is_empty() {
-                ui.colored_label(ui.visuals().error_fg_color, &self.error);
+        }
+        if self.tutorial
+            && self.canvas.is_some()
+            && self.occupied.is_none()
+            && onboarding::tutorial(ctx, &self.materials.style)
+            && let Some(p) = &mut self.preferences
+        {
+            match p.set("tutorial_seen", true.into()) {
+                Ok(()) => self.tutorial = false,
+                Err(e) => self.error = e.to_string(),
             }
-        });
+        }
+        if let Some(list) = &mut self.flat_list {
+            let mut open = true;
+            let selected = list.show(ctx, &self.materials.style, &mut open);
+            if let Some((board, file)) = selected {
+                self.flat_list = None;
+                if let Err(e) = self.reveal_card(&board, file) {
+                    self.error = e.to_string();
+                }
+            } else if !open {
+                self.flat_list = None;
+            }
+        }
         if self.showing_settings {
             let mut show = true;
             egui::Window::new("Settings")
+                .vscroll(true)
                 .open(&mut show)
                 .show(ctx, |ui| {
+                    ui.collapsing("Gestures and keys", |ui| {
+                        for instruction in [
+                            "Click a card to copy. Double-click to open its file.",
+                            "Double-click empty board space to write. Ctrl+Enter saves.",
+                            "Hold a tack and drag to connect. Scroll to change yarn color.",
+                            "Connect three bare tacks in a loop to name a zone.",
+                            "Right-click a strand to cut it. Ctrl+Z undoes a board edit.",
+                            "Hold Ctrl to alternate copy and link on drop. Shift moves the file.",
+                        ] {
+                            ui.label(instruction);
+                        }
+                    });
                     if ui.button("Switch folder…").clicked() {
                         self.choose();
                     }
@@ -408,6 +470,65 @@ impl BoardWindow {
                         }
                     }
                     if let Some(prefs) = &mut self.preferences {
+                        if ui.button("Replay tutorial").clicked() {
+                            match prefs.set("tutorial_seen", false.into()) {
+                                Ok(()) => {
+                                    self.tutorial = true;
+                                }
+                                Err(e) => self.error = e.to_string(),
+                            }
+                        }
+                        let mut style = self.materials.style.clone();
+                        style.controls(ui, &self.materials.files);
+                        if ui
+                            .button("Reload overrides")
+                            .on_hover_text(".corktop/overrides/")
+                            .clicked()
+                        {
+                            match prefs.override_files().and_then(|files| {
+                                self.materials.files = files;
+                                self.materials.load_assets(prefs)
+                            }) {
+                                Ok(()) => self.fonts_dirty = true,
+                                Err(e) => self.error = e.to_string(),
+                            }
+                        }
+                        if style != self.materials.style {
+                            match prefs.store("appearance", &style) {
+                                Ok(()) => {
+                                    let changed = self.materials.style.font != style.font
+                                        || self.materials.style.texture != style.texture;
+                                    self.materials.style = style;
+                                    if changed {
+                                        if let Err(e) = self.materials.load_assets(prefs) {
+                                            self.error = e.to_string();
+                                        }
+                                        self.fonts_dirty = true;
+                                    }
+                                }
+                                Err(e) => self.error = e.to_string(),
+                            }
+                        }
+                        let mut enabled = prefs.flag("true_believer_mode", true);
+                        if ui
+                            .checkbox(&mut enabled, "True Believer Mode")
+                            .on_hover_text("Maintains signal alignment.")
+                            .changed()
+                        {
+                            if let Err(e) = prefs.set("true_believer_mode", enabled.into()) {
+                                self.error = e.to_string();
+                            } else if !enabled {
+                                self.smart_until =
+                                    Some(std::time::Instant::now() + Duration::from_secs(2));
+                            }
+                        }
+                        if let Some(left) = self
+                            .smart_until
+                            .and_then(|end| end.checked_duration_since(std::time::Instant::now()))
+                        {
+                            ui.small("Smart.");
+                            ctx.request_repaint_after(left);
+                        }
                         for (key, label) in [
                             ("display_only_titles", "Display-only titles"),
                             ("link_file_drops", "Link dropped files by default"),
@@ -423,10 +544,18 @@ impl BoardWindow {
                 });
             self.showing_settings = show;
         }
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let panel = egui::CentralPanel::default();
+        let panel = if self.canvas.is_some() && self.occupied.is_none() {
+            panel.frame(egui::Frame::NONE)
+        } else {
+            panel
+        };
+        panel.show(ctx, |ui| {
             if let Some(canvas) = &mut self.canvas
                 && self.occupied.is_none()
             {
+                self.materials
+                    .paint(ui, ui.max_rect(), ui.min_rect().min, 1.);
                 let scroll = egui::scroll_area::ScrollSource {
                     drag: false,
                     ..Default::default()
@@ -434,7 +563,7 @@ impl BoardWindow {
                 egui::ScrollArea::both()
                     .scroll_source(scroll)
                     .show_viewport(ui, |ui, viewport| {
-                        if let Err(e) = canvas.show(ui, viewport.size()) {
+                        if let Err(e) = canvas.show(ui, viewport.size(), &mut self.materials) {
                             self.error = format!("Board action failed: {e}");
                             ctx.request_repaint();
                         }
@@ -469,20 +598,10 @@ impl BoardWindow {
                     self.show_root(result);
                 }
             } else {
-                ui.label("Board folder");
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut self.folder)
-                        .hint_text("Path to an empty folder or an existing board")
-                        .desired_width(440.0),
-                );
-                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                if ui.button("Browse…").clicked() {
-                    self.choose();
-                }
-                if ui.button("Open folder").clicked() || enter {
-                    let folder = self.folder.clone();
-                    self.open(Path::new(&folder));
-                }
+                self.materials.style = self.setup.style.clone();
+                self.materials
+                    .paint(ui, ui.max_rect(), ui.min_rect().min, 1.);
+                self.setup_card(ctx);
             }
         });
     }
@@ -512,7 +631,12 @@ fn strand(a: Pos2, b: Pos2) -> [Pos2; 17] {
 }
 
 impl Canvas {
-    fn show(&mut self, ui: &mut egui::Ui, viewport: Vec2) -> std::io::Result<()> {
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        viewport: Vec2,
+        materials: &mut material::Materials,
+    ) -> std::io::Result<()> {
         if let Ok(error) = self.open_error_rx.try_recv() {
             return Err(error);
         }
@@ -552,6 +676,8 @@ impl Canvas {
             ui.ctx().request_repaint();
             return Ok(());
         }
+        materials.paint(ui, ui.clip_rect(), origin, scale);
+        let style = &materials.style;
         let clip = ui.clip_rect().intersect(canvas);
         for (a, b, visible) in [
             (
@@ -658,22 +784,57 @@ impl Canvas {
                     self.pending_copy = Some((idx, now + delay));
                 }
             }
+            if let Some((file, until, scroll)) = &mut self.reveal
+                && *file == card.file
+                && let Some(left) = until.checked_duration_since(std::time::Instant::now())
+            {
+                if std::mem::take(scroll) {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                }
+                let pulse = (left.as_secs_f32() * 10.).sin() * 0.5 + 0.5;
+                ui.painter().rect_stroke(
+                    rect.expand(3. + pulse * 3.),
+                    6.,
+                    egui::Stroke::new(2. + pulse * 2., Color32::WHITE),
+                    egui::StrokeKind::Outside,
+                );
+                ui.ctx().request_repaint();
+            }
             rects.push(rect);
             if !ui.is_rect_visible(rect) {
                 continue;
             }
             let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-            painter.rect_filled(
-                rect,
-                4.0,
-                if card.missing {
-                    Color32::from_gray(165)
-                } else if card.folder {
-                    Color32::from_rgb(218, 181, 115)
-                } else {
-                    Color32::from_rgb(243, 228, 178)
-                },
-            );
+            let paper = if card.missing {
+                Color32::from_gray(165)
+            } else {
+                style.note(&card.file, card.folder)
+            };
+            let ink = if paper.intensity() < 0.45 {
+                Color32::WHITE
+            } else {
+                Color32::from_gray(32)
+            };
+            if card.folder {
+                let tab = [
+                    rect.min + vec2(0., 8.),
+                    rect.min + vec2(0., 3.),
+                    rect.min + vec2(44., 3.) * scale,
+                    rect.min + vec2(53., 11.) * scale,
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    tab.to_vec(),
+                    paper.gamma_multiply(0.82),
+                    egui::Stroke::NONE,
+                ));
+                painter.rect_filled(
+                    Rect::from_min_max(rect.min + vec2(0., 8.) * scale, rect.max),
+                    4.,
+                    paper,
+                );
+            } else {
+                painter.rect_filled(rect, 4., paper);
+            }
             if rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO)) {
                 let edit =
                     Rect::from_min_size(rect.right_bottom() - vec2(44.0, 23.0), vec2(42.0, 21.0));
@@ -748,23 +909,19 @@ impl Canvas {
                 } else {
                     card.title.clone().unwrap_or(title)
                 },
-                egui::FontId::proportional(18.0 * scale),
-                Color32::from_gray(32),
+                style.title(18.0 * scale),
+                ink,
             );
             let text = painter.layout(
                 body,
-                egui::FontId::proportional(14.0 * scale),
-                Color32::from_gray(45),
+                style.body(14.0 * scale),
+                ink,
                 (CARD_SIZE.x - 20.0) * scale,
             );
             if !card.missing && images::supported(&card.file) {
                 self.images.preview(&self.board, idx, ui, rect);
             }
-            painter.galley(
-                rect.min + vec2(10.0, 47.0) * scale,
-                text,
-                Color32::from_gray(45),
-            );
+            painter.galley(rect.min + vec2(10.0, 47.0) * scale, text, ink);
         }
         if let Some(idx) = remove {
             self.board.remove_card(idx)?;
@@ -848,9 +1005,9 @@ impl Canvas {
             }
             self.board.move_card(idx, pos)?;
         }
-        self.show_strings(ui, &rects, origin, scale)?;
+        self.show_strings(ui, &rects, origin, scale, style)?;
         self.spatial
-            .show(&mut self.board, ui, origin, scale, &background)?;
+            .show(&mut self.board, ui, origin, scale, &background, style)?;
         if self.board.cards().len() != rects.len() {
             self.copied = None;
             self.pending_copy = None;
@@ -1006,6 +1163,7 @@ impl Canvas {
         cards: &[Rect],
         origin: Pos2,
         scale: f32,
+        style: &material::Style,
     ) -> std::io::Result<()> {
         let pointer = ui.input(|i| i.pointer.interact_pos());
 
@@ -1063,7 +1221,7 @@ impl Canvas {
             let ink = if selected == Some(target) {
                 egui::Stroke::new(4.5, Color32::from_rgb(248, 99, 64))
             } else {
-                egui::Stroke::new(2.5, spatial::THREADS[color])
+                egui::Stroke::new(2.5, style.thread(color))
             };
             paint_yarn(ui, path, ink);
         }
@@ -1085,7 +1243,7 @@ impl Canvas {
                 paint_yarn(
                     ui,
                     strand(start, p),
-                    egui::Stroke::new(2.5, spatial::THREADS[drag.color]),
+                    egui::Stroke::new(2.5, style.thread(drag.color)),
                 );
                 if released
                     && let Some(target) = cards.iter().rposition(|rect| rect.contains(p))
@@ -1121,13 +1279,7 @@ impl Canvas {
         }
         for rect in cards {
             if ui.is_rect_visible(*rect) {
-                ui.painter()
-                    .circle_filled(tack(*rect), 6.0, Color32::from_rgb(135, 61, 43));
-                ui.painter().circle_filled(
-                    tack(*rect) - vec2(1.0, 1.0),
-                    2.5,
-                    Color32::from_rgb(236, 166, 108),
-                );
+                style.pin(ui.painter(), tack(*rect));
             }
         }
         let id = ui.id().with("cut-string");

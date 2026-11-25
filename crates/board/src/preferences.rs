@@ -58,3 +58,69 @@ impl Preferences {
         Ok(())
     }
 }
+
+impl Preferences {
+    pub fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> io::Result<Option<T>> {
+        self.values
+            .get(key)
+            .cloned()
+            .map(|v| v.try_into().map_err(io::Error::other))
+            .transpose()
+    }
+    pub fn store<T: serde::Serialize>(&mut self, key: &str, value: &T) -> io::Result<()> {
+        self.set(key, toml::Value::try_from(value).map_err(io::Error::other)?)
+    }
+}
+
+impl Preferences {
+    fn overrides(&self) -> io::Result<PathBuf> {
+        let dir = self.directory.join("overrides");
+        for p in [&self.directory, &dir] {
+            if !p.symlink_metadata()?.is_dir() {
+                return Err(io::Error::other("invalid overrides directory"));
+            }
+        }
+        Ok(dir)
+    }
+    pub fn override_files(&self) -> io::Result<Vec<String>> {
+        let dir = match self.overrides() {
+            Ok(d) => d,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut files = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file()
+                && let Ok(name) = entry.file_name().into_string()
+            {
+                files.push(name);
+            }
+        }
+        files.sort_unstable();
+        Ok(files)
+    }
+    pub fn read_override(&self, name: &str) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        let name = Path::new(name);
+        if Some(name.as_os_str()) != name.file_name() {
+            return Err(io::Error::other("invalid override filename"));
+        }
+        let path = self.overrides()?.join(name);
+        if !path.symlink_metadata()?.is_file() {
+            return Err(io::Error::other("expected a regular override file"));
+        }
+        let file = crate::nofollow_options().read(true).open(path)?;
+        let limit = 16 * 1024 * 1024;
+        let meta = file.metadata()?;
+        if !meta.is_file() || meta.len() > limit {
+            return Err(io::Error::other("override exceeds size limit"));
+        }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.take(limit + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(io::Error::other("override exceeds size limit"));
+        }
+        Ok(bytes)
+    }
+}

@@ -1,3 +1,5 @@
+mod index;
+pub use index::ListEntry;
 mod pack;
 mod recycle;
 mod spatial;
@@ -185,6 +187,42 @@ impl Card {
     }
 }
 
+fn load_cards(root: &Path, manifest: &Table) -> io::Result<Vec<Card>> {
+    if manifest.get("schema_version").and_then(Value::as_integer)
+        != Some(i64::from(MANIFEST_VERSION))
+    {
+        return Err(invalid("unsupported board version"));
+    }
+    let mut cards = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(entries) = manifest.get("cards") {
+        let entries = entries.as_array().ok_or_else(|| invalid("invalid cards"))?;
+        if entries.len() > MAX_CARDS {
+            return Err(invalid("too many cards"));
+        }
+        for entry in entries {
+            let file = entry
+                .get("file")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("missing card filename"))?;
+            if !valid_name(file) || !seen.insert(file.to_ascii_lowercase()) {
+                return Err(invalid("invalid or duplicate card filename"));
+            }
+            let mut card = Card::load(
+                root,
+                file,
+                [position(entry.get("x"))?, position(entry.get("y"))?],
+            )?;
+            card.title = entry
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            cards.push(card);
+        }
+    }
+    Ok(cards)
+}
+
 impl Board {
     pub fn open(root: &Path) -> io::Result<Self> {
         Self::open_folder(root, false)
@@ -244,38 +282,7 @@ impl Board {
             }
             Err(e) => return Err(e),
         };
-        if manifest.get("schema_version").and_then(Value::as_integer)
-            != Some(i64::from(MANIFEST_VERSION))
-        {
-            return Err(invalid("unsupported board version"));
-        }
-        let mut cards = Vec::new();
-        let mut seen = HashSet::new();
-        if let Some(entries) = manifest.get("cards") {
-            let entries = entries.as_array().ok_or_else(|| invalid("invalid cards"))?;
-            if entries.len() > MAX_CARDS {
-                return Err(invalid("too many cards"));
-            }
-            for entry in entries {
-                let file = entry
-                    .get("file")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid("missing card filename"))?;
-                if !valid_name(file) || !seen.insert(file.to_ascii_lowercase()) {
-                    return Err(invalid("invalid or duplicate card filename"));
-                }
-                let mut card = Card::load(
-                    &root,
-                    file,
-                    [position(entry.get("x"))?, position(entry.get("y"))?],
-                )?;
-                card.title = entry
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                cards.push(card);
-            }
-        }
+        let cards = load_cards(&root, &manifest)?;
         let strings = load_strings(&manifest, &cards)?;
         let mut board = Self {
             inbox: Vec::new(),

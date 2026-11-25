@@ -108,3 +108,15 @@ impl Images {
         }
     }
 }
+
+pub(super) fn thumbnail(ctx: &egui::Context, path: &Path) -> Option<egui::TextureHandle> {
+    if !path.symlink_metadata().ok()?.is_file() {
+        return None;
+    }
+    let small = decode(path).ok()?.thumbnail(64, 64).into_rgba8();
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(
+        [small.width() as usize, small.height() as usize],
+        small.as_raw(),
+    );
+    Some(ctx.load_texture("list preview", pixels, egui::TextureOptions::LINEAR))
+}
