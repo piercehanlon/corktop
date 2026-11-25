@@ -29,6 +29,9 @@ fn decode(path: &Path) -> io::Result<image::DynamicImage> {
 }
 
 impl Images {
+    pub(super) fn reset_textures(&mut self) {
+        self.previews.clear();
+    }
     fn clipboard(&mut self) -> io::Result<&mut arboard::Clipboard> {
         if self.clipboard.is_none() {
             self.clipboard = Some(arboard::Clipboard::new().map_err(io::Error::other)?);

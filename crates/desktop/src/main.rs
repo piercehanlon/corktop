@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod board_window;
+mod shell;
 use board_window::BoardWindow;
 use eframe::egui;
 use std::process::ExitCode;
@@ -54,8 +55,17 @@ fn main() -> ExitCode {
                 return failure("window initialization failed");
             }
         }
-        (None, None) => return board_window(None),
-        (Some(flag), Some(path)) if flag == "--board" => return board_window(Some(path)),
+        (None, None) => return board_window(None, None, false),
+        (Some(flag), Some(path)) if flag == "--board" => {
+            return board_window(Some(path), None, false);
+        }
+        (Some(flag), path) if flag == "--desktop" || flag == "--window" => {
+            return board_window(path, Some(flag == "--desktop"), false);
+        }
+        (Some(path), None) if !path.to_string_lossy().starts_with('-') => {
+            return board_window(Some(path), None, false);
+        }
+        (Some(flag), path) if flag == "--panel" => return board_window(path, Some(false), true),
         (Some(flag), None) if flag == "--version" => println!("{VERSION}"),
         (Some(flag), None) if flag == "--identity" => println!(
             "{}",
@@ -99,37 +109,106 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn board_window(path: Option<std::ffi::OsString>) -> ExitCode {
-    let mut app = BoardWindow::default();
-    if let Some(path) = path {
-        app.open(std::path::Path::new(&path));
-    }
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_decorations(false)
-            .with_inner_size([780.0, 540.0]),
-        ..Default::default()
+fn board_window(path: Option<std::ffi::OsString>, mode: Option<bool>, panel: bool) -> ExitCode {
+    let path = match path.map(std::path::absolute).transpose() {
+        Ok(path) => path,
+        Err(_) => return failure("invalid board path"),
     };
-    if eframe::run_native(
-        "corktop",
-        options,
-        Box::new(move |_cc| {
+    let control = if panel {
+        shell::control::Control::local()
+    } else {
+        match shell::control::start(shell::control::Launch::Open {
+            path: path.clone(),
+            desktop: mode,
+        }) {
+            Ok(Some(c)) => c,
+            Ok(None) => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("Launch routing: {e}");
+                return failure("could not route launch");
+            }
+        }
+    };
+    let mut state = match shell::MachineState::load() {
+        Ok(s) => s,
+        Err(_) => return failure("could not read local window state"),
+    };
+    if let Some(mode) = mode {
+        state.desktop = mode;
+    }
+    let folder = path.or_else(|| state.folder.clone().filter(|f| !panel && f.is_dir()));
+    let mut app = BoardWindow::default();
+    app.machine = state;
+    app.panel = panel;
+    app.control = Some(control);
+    if let Some(path) = folder {
+        app.open(&path);
+    }
+    // Keep the board and its lock alive when Wayland requires a new surface role.
+    let app = std::rc::Rc::new(std::cell::RefCell::new(app));
+    #[cfg(target_os = "linux")]
+    let mut wayland_events = None;
+    loop {
+        #[cfg(target_os = "linux")]
+        if app.borrow().machine.desktop && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            let mut board = app.borrow_mut();
+            match shell::wayland::run(&mut board) {
+                Ok(shell::wayland::Exit::Quit) => {
+                    eframe::App::on_exit(&mut *board, None);
+                    return ExitCode::SUCCESS;
+                }
+                Ok(shell::wayland::Exit::Standard) => board.machine.desktop = false,
+                Err(e) => {
+                    board.machine.desktop = false;
+                    board.layer_unavailable(e);
+                }
+            }
+        }
+        let options = eframe::NativeOptions {
+            viewport: app.borrow().machine.viewport(),
+            ..Default::default()
+        };
+        let window = app.clone();
+        let creator: eframe::AppCreator = Box::new(move |cc| {
             #[cfg(windows)]
             {
-                // Use the same user-configured interval for recognition and deferred copy.
                 let millis = unsafe {
                     windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime()
                 };
-                _cc.egui_ctx.options_mut(|o| {
+                cc.egui_ctx.options_mut(|o| {
                     o.input_options.max_double_click_delay = f64::from(millis) / 1000.0
                 });
             }
-            Ok(Box::new(app))
-        }),
-    )
-    .is_err()
-    {
-        return failure("window initialization failed");
+            window.borrow_mut().attach(&cc.egui_ctx);
+            Ok(Box::new(StandardWindow(window)))
+        });
+        #[cfg(target_os = "linux")]
+        let result = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            shell::wayland::standard(&mut wayland_events, options, creator)
+        } else {
+            eframe::run_native("corktop", options, creator)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let result = eframe::run_native("corktop", options, creator);
+        if result.is_err() {
+            return failure("window initialization failed");
+        }
+        #[cfg(target_os = "linux")]
+        if std::mem::take(&mut app.borrow_mut().change_host)
+            && app.borrow_mut().wait_for_visibility()
+        {
+            continue;
+        }
+        return ExitCode::SUCCESS;
     }
-    ExitCode::SUCCESS
+}
+
+struct StandardWindow(std::rc::Rc<std::cell::RefCell<BoardWindow>>);
+impl eframe::App for StandardWindow {
+    fn update(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
+        self.0.borrow_mut().update(ctx, frame);
+    }
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        self.0.borrow_mut().on_exit(gl);
+    }
 }

@@ -8,10 +8,26 @@ license.workspace = true
 [dependencies]
 corktop-board = { path = "../board" }
 eframe = { version = "=0.32.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+raw-window-handle = "=0.6.2"
+interprocess = "=2.4.9"
 serde_json = "=1.0.145"
 tempfile = "3"
 arboard = "=3.7.0"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_System_Com", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Graphics_Gdi","Win32_System_LibraryLoader","Win32_System_Com", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell_Common", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "=0.13.2"
+ksni = { version = "=0.3.7", features = ["blocking"] }
+arboard = { version = "=3.7.0", features = ["wayland-data-control"] }
+smithay-client-toolkit = "=0.19.2"
+wayland-client = "=0.31.15"
+wayland-backend = { version = "=0.3.17", features = ["client_system"] }
+glutin = { version = "=0.32.3", default-features = false, features = ["egl", "wayland"] }
+egui_glow = "=0.32.3"
+smithay-clipboard = "=0.7.3"
+winit = { version = "=0.30.13", default-features = false, features = ["wayland", "x11", "rwh_06"] }
+url = "=2.5.9"
