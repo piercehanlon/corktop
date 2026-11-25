@@ -16,6 +16,7 @@ mod spatial;
 const CARD_SIZE: Vec2 = vec2(220.0, 112.0);
 
 struct Draft {
+    original: Option<(usize, String)>,
     position: [i32; 2],
     text: String,
     focus: bool,
@@ -30,8 +31,6 @@ enum Thread {
 
 struct TackDrag {
     source: usize,
-    started: f64,
-    armed: bool,
     color: usize,
 }
 
@@ -51,6 +50,7 @@ struct Canvas {
     edit_title: Option<(usize, String)>,
     options: Option<CardOptions>,
     confirm_empty: bool,
+    request_settings: bool,
     display_only: bool,
     drop_action: file_drop::Action,
     pending_drop: file_drop::Pending,
@@ -68,6 +68,7 @@ struct Canvas {
     pending_copy: Option<(usize, f64)>,
     copied: Option<(usize, f64)>,
     paste_at: Option<[i32; 2]>,
+    menu_pin_position: [i32; 2],
     cut_menu: Option<(Thread, Pos2)>,
 }
 
@@ -329,6 +330,7 @@ impl BoardWindow {
                     edit_title: None,
                     options: None,
                     confirm_empty: false,
+                    request_settings: false,
                     display_only: false,
                     drop_action: Default::default(),
                     pending_drop: Default::default(),
@@ -345,6 +347,7 @@ impl BoardWindow {
                     pending_copy: None,
                     copied: None,
                     paste_at: None,
+                    menu_pin_position: [0, 0],
                 });
                 self.occupied = None;
                 self.flat_list = None;
@@ -423,35 +426,64 @@ impl BoardWindow {
             self.hud(ctx);
         }
         if !self.machine.desktop && !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
-            for (corner, direction, cursor) in [
+            let screen = ctx.screen_rect();
+            for (anchor, direction, cursor, size) in [
+                (
+                    egui::Align2::CENTER_TOP,
+                    egui::ResizeDirection::North,
+                    egui::CursorIcon::ResizeVertical,
+                    vec2((screen.width() - 16.).max(0.), 8.),
+                ),
+                (
+                    egui::Align2::CENTER_BOTTOM,
+                    egui::ResizeDirection::South,
+                    egui::CursorIcon::ResizeVertical,
+                    vec2((screen.width() - 16.).max(0.), 8.),
+                ),
+                (
+                    egui::Align2::LEFT_CENTER,
+                    egui::ResizeDirection::West,
+                    egui::CursorIcon::ResizeHorizontal,
+                    vec2(8., (screen.height() - 16.).max(0.)),
+                ),
+                (
+                    egui::Align2::RIGHT_CENTER,
+                    egui::ResizeDirection::East,
+                    egui::CursorIcon::ResizeHorizontal,
+                    vec2(8., (screen.height() - 16.).max(0.)),
+                ),
                 (
                     egui::Align2::LEFT_TOP,
                     egui::ResizeDirection::NorthWest,
                     egui::CursorIcon::ResizeNwSe,
+                    vec2(8., 8.),
                 ),
                 (
                     egui::Align2::RIGHT_TOP,
                     egui::ResizeDirection::NorthEast,
                     egui::CursorIcon::ResizeNeSw,
+                    vec2(8., 8.),
                 ),
                 (
                     egui::Align2::LEFT_BOTTOM,
                     egui::ResizeDirection::SouthWest,
                     egui::CursorIcon::ResizeNeSw,
+                    vec2(8., 8.),
                 ),
                 (
                     egui::Align2::RIGHT_BOTTOM,
                     egui::ResizeDirection::SouthEast,
                     egui::CursorIcon::ResizeNwSe,
+                    vec2(8., 8.),
                 ),
             ] {
-                egui::Area::new(egui::Id::new(("resize", corner)))
+                egui::Area::new(egui::Id::new(("resize", anchor)))
                     .order(egui::Order::Foreground)
-                    .default_size(vec2(12., 12.))
-                    .anchor(corner, Vec2::ZERO)
+                    .default_size(size)
+                    .anchor(anchor, Vec2::ZERO)
                     .movable(false)
                     .show(ctx, |ui| {
-                        let (_, r) = ui.allocate_exact_size(vec2(12., 12.), Sense::drag());
+                        let (_, r) = ui.allocate_exact_size(size, Sense::drag());
                         if r.on_hover_cursor(cursor).is_pointer_button_down_on()
                             && ui.input(|i| i.pointer.primary_pressed())
                         {
@@ -503,9 +535,9 @@ impl BoardWindow {
                         for instruction in [
                             "Click a card to copy. Double-click to open its file.",
                             "Right-click a card for editing or recycling. Drag its body to move.",
-                            "Drag empty banner space to move the window; drag any corner to resize.",
+                            "Drag empty banner space to move the window; drag any edge or corner to resize.",
                             "Double-click empty board space to write. Ctrl+Enter saves.",
-                            "Hold a tack and drag to connect. Scroll to change yarn color.",
+                            "Drag a pinhead or tack to connect. Shift-drag a bare tack to move it. Scroll to change yarn color.",
                             "Connect three bare tacks in a loop to name a zone.",
                             "Right-click a strand to cut it. Ctrl+Z undoes a board edit.",
                             "Hold Ctrl to alternate copy and link on drop. Shift moves the file.",
@@ -624,7 +656,7 @@ impl BoardWindow {
                                 "display_only_titles",
                                 "Keep the filename when editing a card title",
                             ),
-                            ("auto_hide_controls", "Auto-hide board controls"),
+                            ("auto_hide_controls", "Auto-hide top bar"),
                         ] {
                             let mut value = prefs.flag(key, false);
                             if ui.checkbox(&mut value, label).changed()
@@ -666,6 +698,9 @@ impl BoardWindow {
                             ctx.request_repaint();
                         }
                     });
+                if std::mem::take(&mut canvas.request_settings) {
+                    self.showing_settings = true;
+                }
                 if let Some(idx) = canvas.enter.take() {
                     let child = canvas
                         .board
@@ -710,6 +745,19 @@ fn logical(p: Vec2) -> [i32; 2] {
         p.x.round().clamp(0.0, 1_000_000.0) as i32,
         p.y.round().clamp(0.0, 1_000_000.0) as i32,
     ]
+}
+
+fn free_paste_position(board: &Board, start: [i32; 2]) -> [i32; 2] {
+    let extent = board.canvas_size();
+    let mut pos = start;
+    for _ in 0..board.cards().len() {
+        if !board.cards().iter().any(|c| c.position == pos) {
+            break;
+        }
+        pos[1] = (pos[1] + 26) % (extent[1] - 111).max(1);
+        pos[0] = (pos[0] + 8) % (extent[0] - 219).max(1);
+    }
+    pos
 }
 
 fn offset(p: [i32; 2]) -> Vec2 {
@@ -773,20 +821,6 @@ impl Canvas {
         let (canvas, background) = ui.allocate_exact_size(extent * scale, Sense::click());
         let origin = canvas.min;
         let card_position = |p: Vec2| logical((p / scale).min(extent - CARD_SIZE));
-        let mut refit = false;
-        if self.cut_menu.is_none() {
-            background.context_menu(|ui| {
-                if ui.button("Refit to Current Frame").clicked() {
-                    refit = true;
-                    ui.close();
-                }
-            });
-        }
-        if refit {
-            self.board.refit(logical(viewport))?;
-            ui.ctx().request_repaint();
-            return Ok(());
-        }
         materials.paint(ui, ui.clip_rect(), origin, scale);
         let style = &materials.style;
         let clip = ui.clip_rect().intersect(canvas);
@@ -907,6 +941,14 @@ impl Canvas {
         let now = ui.input(|i| i.time);
         let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
         let mut dropped = None;
+        enum CardAction {
+            Tone(Option<u8>),
+            Inline,
+            Recycle,
+            Location,
+        }
+        let mut card_action = None;
+        let mut pin_edit = None;
         let mut rects = Vec::with_capacity(self.board.cards().len());
         for (idx, card) in self.board.cards().iter().enumerate() {
             let position = self
@@ -915,7 +957,66 @@ impl Canvas {
                 .map_or(card.position, |(_, pos)| pos);
             let rect = Rect::from_min_size(origin + offset(position) * scale, CARD_SIZE * scale);
             let response = ui.interact(rect, ui.id().with(("card", idx)), Sense::click_and_drag());
-            let edit = response.secondary_clicked();
+            let mut edit = false;
+            if self.draft.is_none() {
+                response.context_menu(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Paper");
+                        if ui.small_button("Default").clicked() {
+                            card_action = Some((idx, CardAction::Tone(None)));
+                            ui.close();
+                        }
+                        for tone in 0..4 {
+                            if ui
+                                .add(egui::Button::new("  ").fill(style.card_paper(
+                                    &card.file,
+                                    card.folder,
+                                    Some(tone),
+                                )))
+                                .on_hover_text(format!("Paper color {}", tone + 1))
+                                .clicked()
+                            {
+                                card_action = Some((idx, CardAction::Tone(Some(tone))));
+                                ui.close();
+                            }
+                        }
+                    });
+                    if !card.missing
+                        && !card.folder
+                        && Path::new(&card.file).extension().is_some_and(|e| {
+                            e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("txt")
+                        })
+                        && ui.button("Edit inline").clicked()
+                    {
+                        card_action = Some((idx, CardAction::Inline));
+                        ui.close();
+                    }
+                    if !card.show_pin && ui.button("Show tack").clicked() {
+                        pin_edit = Some((idx, false));
+                        ui.close();
+                    }
+                    if ui.button("Rename / options…").clicked() {
+                        edit = true;
+                        ui.close();
+                    }
+                    if ui.button("Open file location").clicked() {
+                        card_action = Some((idx, CardAction::Location));
+                        ui.close();
+                    }
+                    if !card.folder
+                        && ui
+                            .button(if card.missing {
+                                "Dismiss missing card"
+                            } else {
+                                "Move to recycle bin"
+                            })
+                            .clicked()
+                    {
+                        card_action = Some((idx, CardAction::Recycle));
+                        ui.close();
+                    }
+                });
+            }
             if self.options.is_none()
                 && !edit
                 && self.draft.is_none()
@@ -1017,10 +1118,22 @@ impl Canvas {
                 ui.interact(
                     Rect::from_center_size(tack(rect), vec2(22.0, 22.0)),
                     ui.id().with(("tack", idx)),
-                    Sense::drag(),
+                    Sense::click_and_drag(),
                 )
-                .on_hover_text("Hold, then drag to another card")
+                .on_hover_text("Drag to pull yarn · Right-click for tack options")
             });
+            if let Some(response) = &pin {
+                response.context_menu(|ui| {
+                    if ui.button("Hide tack").clicked() {
+                        pin_edit = Some((idx, false));
+                        ui.close();
+                    }
+                    if ui.button("Cut attached strings").clicked() {
+                        pin_edit = Some((idx, true));
+                        ui.close();
+                    }
+                });
+            }
             if self.draft.is_none()
                 && pin.is_some_and(|p| p.is_pointer_button_down_on())
                 && ui.input(|i| i.pointer.primary_pressed())
@@ -1028,20 +1141,11 @@ impl Canvas {
                 self.pending_copy = None;
                 self.tack_drag = Some(TackDrag {
                     source: idx,
-                    started: ui.input(|i| i.time),
-                    armed: false,
                     color: 0,
                 });
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(200));
             }
             let mut lines = card.text.lines();
-            let title = lines
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(96)
-                .collect::<String>();
+            lines.next();
             let mut body: String = lines
                 .take(4)
                 .flat_map(|line| line.chars().chain(['\n']))
@@ -1055,15 +1159,17 @@ impl Canvas {
             {
                 body = format!("{} file", ext.to_string_lossy().to_uppercase());
             }
-            painter.text(
-                rect.min + vec2(10.0, 21.0) * scale,
-                egui::Align2::LEFT_TOP,
-                if card.missing {
-                    format!("Missing: {}", card.file)
-                } else {
-                    card.title.clone().unwrap_or(title)
-                },
-                style.title(18.0 * scale),
+            let title = if card.missing {
+                format!("Missing: {}", card.display_title())
+            } else {
+                card.display_title().to_owned()
+            };
+            let mut job =
+                egui::text::LayoutJob::simple_singleline(title, style.title(18. * scale), ink);
+            job.wrap = egui::text::TextWrapping::truncate_at_width((CARD_SIZE.x - 20.) * scale);
+            painter.galley(
+                rect.min + vec2(10., 21.) * scale,
+                painter.layout_job(job),
                 ink,
             );
             let text = painter.layout(
@@ -1076,6 +1182,48 @@ impl Canvas {
                 self.images.preview(&self.board, idx, ui, rect);
             }
             painter.galley(rect.min + vec2(10.0, 47.0) * scale, text, ink);
+        }
+        if let Some((idx, action)) = card_action {
+            self.pending_copy = None;
+            let card = &self.board.cards()[idx];
+            match action {
+                CardAction::Inline => {
+                    let text = self.board.note_text(idx)?;
+                    self.draft = Some(Draft {
+                        original: Some((idx, text.clone())),
+                        position: card.position,
+                        text,
+                        focus: true,
+                    });
+                }
+                CardAction::Tone(tone) => {
+                    self.board
+                        .configure_card(idx, tone, card.show_pin, card.position)?
+                }
+                CardAction::Location => opener::launch(
+                    self.board.root().into(),
+                    self.open_error_tx.clone(),
+                    ui.ctx().clone(),
+                )?,
+                CardAction::Recycle => {
+                    self.board.remove_card(idx)?;
+                    self.copied = None;
+                    self.tack_drag = None;
+                    self.cut_menu = None;
+                    ui.ctx().request_repaint();
+                    return Ok(());
+                }
+            }
+        }
+        if let Some((idx, cut)) = pin_edit {
+            if cut {
+                self.board.cut_card_strings(idx)?;
+            } else {
+                let c = &self.board.cards()[idx];
+                self.board
+                    .configure_card(idx, c.tone, !c.show_pin, c.position)?;
+            }
+            self.tack_drag = None;
         }
         if self.confirm_empty {
             let mut empty = false;
@@ -1165,11 +1313,65 @@ impl Canvas {
             self.cut_menu = None;
             self.tack_drag = None;
         }
+        if background.secondary_clicked()
+            && let Some(p) = background.interact_pointer_pos()
+        {
+            self.paste_at = Some(card_position(p - origin));
+            self.menu_pin_position = logical(((p - origin) / scale).min(extent - vec2(6., 6.)));
+        }
+        if self.cut_menu.is_none() {
+            let pos = self.paste_at.unwrap_or([0, 0]);
+            let mut add_pin = false;
+            let mut paste = false;
+            let mut refit = false;
+            background.context_menu(|ui| {
+                if ui.button("New note").clicked() {
+                    self.draft = Some(Draft {
+                        original: None,
+                        position: pos,
+                        text: String::new(),
+                        focus: true,
+                    });
+                    ui.close();
+                }
+                if ui.button("Place bare tack").clicked() {
+                    add_pin = true;
+                    ui.close();
+                }
+                if ui.button("Paste").clicked() {
+                    paste = true;
+                    ui.close();
+                }
+                if ui.button("Settings").clicked() {
+                    self.request_settings = true;
+                    ui.close();
+                }
+                if ui.button("Refit to Current Frame").clicked() {
+                    refit = true;
+                    ui.close();
+                }
+            });
+            if add_pin {
+                self.board.add_pin(self.menu_pin_position)?;
+            }
+            if paste {
+                self.images.paste_menu(
+                    &mut self.board,
+                    pos,
+                    self.drop_action == file_drop::Action::Link,
+                    ui.ctx(),
+                )?;
+            }
+            if refit {
+                self.board.refit(logical(viewport))?;
+            }
+        }
         if self.draft.is_none()
             && background.double_clicked()
             && let Some(p) = background.interact_pointer_pos()
         {
             self.draft = Some(Draft {
+                original: None,
                 position: card_position(p - origin),
                 text: String::new(),
                 focus: true,
@@ -1183,7 +1385,8 @@ impl Canvas {
                 i.pointer.any_pressed()
                     && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))
             });
-            let cancel = draft.text.trim().is_empty() && ui.input(|i| i.key_pressed(Key::Escape));
+            let cancel = (draft.original.is_some() || draft.text.trim().is_empty())
+                && ui.input(|i| i.key_pressed(Key::Escape));
             let field = ui.put(
                 rect,
                 egui::TextEdit::multiline(&mut draft.text)
@@ -1195,8 +1398,12 @@ impl Canvas {
                 field.request_focus();
             }
             if commit || outside || cancel {
-                if !draft.text.trim().is_empty() {
-                    self.board.create(&draft.text, draft.position)?;
+                if !cancel {
+                    if let Some((idx, original)) = &draft.original {
+                        self.board.edit_note(*idx, original, &draft.text)?;
+                    } else if !draft.text.trim().is_empty() {
+                        self.board.create(&draft.text, draft.position)?;
+                    }
                 }
                 self.draft = None;
                 ui.ctx().request_repaint();
@@ -1223,6 +1430,7 @@ impl Canvas {
         let mut apply = false;
         let mut dismiss = false;
         egui::Window::new("Card options")
+            .default_pos(ui.ctx().screen_rect().center() - vec2(100., 80.))
             .collapsible(false)
             .resizable(false)
             .show(ui.ctx(), |ui| {
@@ -1411,17 +1619,6 @@ impl Canvas {
                 ((ui.clip_rect().min - origin + vec2(12.0, 12.0)) / scale).min(extent - CARD_SIZE),
             )
         });
-        let free_position = |board: &Board| {
-            let mut pos = start;
-            for _ in 0..board.cards().len() {
-                if !board.cards().iter().any(|c| c.position == pos) {
-                    break;
-                }
-                pos[1] = (pos[1] + 26) % (extent.y as i32 - 111).max(1);
-                pos[0] = (pos[0] + 8) % (extent.x as i32 - 219).max(1);
-            }
-            pos
-        };
         // File managers can offer both text and a native file list for one copy.
         // Some compositors expose text events without a data-control clipboard.
         let files = match self.images.clipboard_files() {
@@ -1433,7 +1630,7 @@ impl Canvas {
             for path in files {
                 self.board.import_file(
                     &path,
-                    free_position(&self.board),
+                    free_paste_position(&self.board, start),
                     self.drop_action == file_drop::Action::Link,
                     false,
                 )?;
@@ -1442,11 +1639,11 @@ impl Canvas {
             return Ok(());
         }
         if binary_paste {
-            let pos = free_position(&self.board);
+            let pos = free_paste_position(&self.board, start);
             self.images.paste(&mut self.board, pos)?;
         }
         for text in pastes {
-            let pos = free_position(&self.board);
+            let pos = free_paste_position(&self.board, start);
             self.board.paste_text(&text, pos)?;
             ui.ctx().request_repaint();
         }
@@ -1495,8 +1692,26 @@ impl Canvas {
                 ));
             }
         }
+        let on_handle = pointer.is_some_and(|p| {
+            let on_pin = cards.iter().zip(self.board.cards()).any(|(r, c)| {
+                c.show_pin && Rect::from_center_size(tack(*r), vec2(22., 22.)).contains(p)
+            }) || g.pins.iter().any(|&q| {
+                Rect::from_center_size(origin + offset(q) * scale, vec2(22., 22.)).contains(p)
+            });
+            on_pin
+                || g.zones.iter().enumerate().any(|(n, z)| {
+                    let center = origin + offset(g.center(n)) * scale;
+                    let label = ui.painter().layout_no_wrap(
+                        z.title.clone(),
+                        egui::FontId::proportional(17.),
+                        Color32::WHITE,
+                    );
+                    Rect::from_center_size(center, label.size() + vec2(20., 10.)).contains(p)
+                })
+        });
         for (target, path, _) in &threads {
-            if ui.ui_contains_pointer()
+            if !on_handle
+                && ui.ui_contains_pointer()
                 && self.draft.is_none()
                 && let Some(p) = pointer
             {
@@ -1522,16 +1737,10 @@ impl Canvas {
             paint_yarn(ui, path, ink);
         }
         if let Some(drag) = &mut self.tack_drag {
-            let elapsed = ui.input(|i| i.time) - drag.started;
             let source = drag.source;
             let start = tack(cards[source]);
-            if elapsed >= 0.2 {
-                drag.armed = true;
-            }
             let released = ui.input(|i| i.pointer.primary_released());
-            if let Some(p) = pointer
-                && drag.armed
-            {
+            if let Some(p) = pointer {
                 let wheel = ui.input(|i| i.raw_scroll_delta.y);
                 if wheel != 0.0 {
                     drag.color = (drag.color as i32 + wheel.signum() as i32).rem_euclid(6) as usize;
@@ -1563,8 +1772,6 @@ impl Canvas {
                     self.tack_drag = None;
                     self.board.anchor_card(source, pin, pos, color)?;
                 }
-            } else if pointer.is_some_and(|p| p.distance(start) > 16.0) {
-                self.tack_drag = None;
             }
             if !ui.input(|i| i.pointer.primary_down()) {
                 self.tack_drag = None;
@@ -1589,17 +1796,42 @@ impl Canvas {
             let menu = egui::Popup::new(id, ui.ctx().clone(), pos, ui.layer_id())
                 .open_memory(None)
                 .show(|ui| {
-                    let cut = ui.button("Cut String").clicked();
-                    if cut {
+                    if ui.button("Cut String").clicked() {
                         ui.close();
+                        return Some(None);
                     }
-                    cut
+                    let mut action = None;
+                    ui.menu_button("Change color", |ui| {
+                        for n in 0..6 {
+                            if ui
+                                .add(
+                                    egui::Button::new(format!("Color {}", n + 1))
+                                        .fill(style.thread(n)),
+                                )
+                                .clicked()
+                            {
+                                action = Some(Some(n as u8));
+                                ui.close();
+                            }
+                        }
+                    });
+                    action
                 });
             if menu.is_none() {
                 self.cut_menu = None;
                 ui.ctx().request_repaint();
             }
-            if menu.is_some_and(|response| response.inner) {
+            if let Some(action) = menu.and_then(|r| r.inner) {
+                if let Some(color) = action {
+                    match target {
+                        Thread::Cards(pair) => self.board.recolor_string(pair, color)?,
+                        Thread::Divider(i) => self.board.recolor_pin_string(false, i, color)?,
+                        Thread::Anchor(i) => self.board.recolor_pin_string(true, i, color)?,
+                    }
+                    self.cut_menu = None;
+                    egui::Popup::close_id(ui.ctx(), id);
+                    return Ok(());
+                }
                 self.cut_menu = None;
                 match target {
                     Thread::Cards([a, b]) => self.board.cut(a, b)?,

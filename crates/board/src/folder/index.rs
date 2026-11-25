@@ -15,15 +15,7 @@ fn list(root: &Path, cards: &[Card], geometry: &Geometry) -> Vec<ListEntry> {
     cards
         .iter()
         .map(|card| {
-            let mut lines = card.text.lines();
-            let first = lines.next().unwrap_or("");
-            let title = card
-                .title
-                .as_deref()
-                .unwrap_or(if first.is_empty() { &card.file } else { first })
-                .chars()
-                .take(120)
-                .collect();
+            let title = card.display_title().chars().take(120).collect();
             let zone = geometry
                 .zones
                 .iter()

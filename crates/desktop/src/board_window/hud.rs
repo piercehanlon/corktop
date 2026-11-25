@@ -1,5 +1,95 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+enum RailIcon {
+    Pin,
+    Inbox,
+    Search,
+    Trash,
+    Settings,
+    Maximize,
+    Restore,
+    Close,
+}
+
+fn rail_button(
+    ui: &mut egui::Ui,
+    icon: RailIcon,
+    label: &str,
+    width: f32,
+    active: bool,
+) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(vec2(width, 24.), Sense::click());
+    if r.hovered() || active {
+        ui.painter().rect_filled(
+            rect,
+            3.,
+            Color32::from_white_alpha(if active { 38 } else { 22 }),
+        );
+    }
+    let c = rect.center();
+    let p = ui.painter();
+    let stroke = egui::Stroke::new(
+        1.5,
+        Color32::from_gray(if ui.is_enabled() { 223 } else { 143 }),
+    );
+    let line = |a: [f32; 2], b: [f32; 2]| {
+        p.line_segment([c + Vec2::from(a), c + Vec2::from(b)], stroke);
+    };
+    let box_at = |dx: f32, dy: f32, w: f32, h: f32| {
+        p.rect_stroke(
+            Rect::from_min_size(c + vec2(dx, dy), vec2(w, h)),
+            1.,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    };
+    match icon {
+        RailIcon::Pin => {
+            line([-4., -6.], [4., -6.]);
+            line([-3., -6.], [-2., -1.]);
+            line([3., -6.], [2., -1.]);
+            line([-2., -1.], [-4., 2.]);
+            line([2., -1.], [4., 2.]);
+            line([-4., 2.], [4., 2.]);
+            line([0., 2.], [0., 8.]);
+        }
+        RailIcon::Inbox => {
+            box_at(-7., -5., 14., 10.);
+            line([-6., -4.], [0., 0.]);
+            line([0., 0.], [6., -4.]);
+        }
+        RailIcon::Search => {
+            p.circle_stroke(c - vec2(1.5, 1.5), 5., stroke);
+            line([2., 2.], [7., 7.]);
+        }
+        RailIcon::Trash => {
+            box_at(-4., -3., 8., 10.);
+            line([-6., -5.], [6., -5.]);
+            line([-2., -7.], [2., -7.]);
+        }
+        RailIcon::Settings => {
+            p.circle_stroke(c, 5., stroke);
+            p.circle_stroke(c, 1.8, stroke);
+            for i in 0..8 {
+                let d = Vec2::angled(i as f32 * std::f32::consts::TAU / 8.);
+                p.line_segment([c + d * 5., c + d * 7.5], stroke);
+            }
+        }
+        RailIcon::Maximize => box_at(-6., -6., 12., 12.),
+        RailIcon::Restore => {
+            box_at(-3., -7., 10., 10.);
+            box_at(-7., -3., 10., 10.);
+        }
+        RailIcon::Close => {
+            line([-5., -5.], [5., 5.]);
+            line([-5., 5.], [5., -5.]);
+        }
+    }
+    r.on_hover_text(label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 impl BoardWindow {
     pub(super) fn hud(&mut self, ctx: &egui::Context) {
         let rect = ctx.screen_rect();
@@ -23,29 +113,15 @@ impl BoardWindow {
             || egui::Popup::is_any_open(ctx);
         let mut parent = None;
         let count = canvas.board.inbox().len();
-        egui::TopBottomPanel::top("board-banner")
-            .frame(
-                egui::Frame::NONE
-                    .fill(Color32::from_rgb(233, 221, 195))
-                    .inner_margin(egui::Margin::symmetric(14, 4)),
-            )
-            .show(ctx, |ui| {
-                ui.set_style({
-                    let mut style = (**ui.style()).clone();
-                    style.visuals = egui::Visuals::light();
-                    style
-                });
-                ui.visuals_mut().override_text_color = Some(Color32::from_rgb(48, 42, 32));
-                ui.visuals_mut().widgets.hovered.weak_bg_fill = Color32::from_rgb(204, 188, 158);
-                ui.horizontal_wrapped(|ui| {
-                    let drag = ui.interact(
-                        ui.max_rect(),
-                        ui.id().with("banner-drag"),
-                        Sense::click_and_drag(),
-                    );
-                    ui.label(egui::RichText::new(folder(&canvas.board)).strong());
+        if reveal {
+            egui::TopBottomPanel::top("board-banner")
+                .exact_height(32.)
+                .frame(egui::Frame::NONE.fill(Color32::from_rgb(57, 51, 44)))
+                .show(ctx, |ui| {
+                    let rect = ui.max_rect();
+                    let drag = ui.interact(rect, ui.id().with("caption"), Sense::click_and_drag());
                     if !self.machine.desktop {
-                        if drag.drag_started() {
+                        if drag.drag_started_by(egui::PointerButton::Primary) {
                             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                         if drag.double_clicked() {
@@ -54,87 +130,140 @@ impl BoardWindow {
                             ));
                         }
                     }
-                    if reveal {
-                        ui.separator();
-                        let compact = rect.width() < 560.;
-                        let mut tools = |ui: &mut egui::Ui| {
-                            if ui
-                                .selectable_label(canvas.spatial.placing, "Place tack")
+                    let width = ((rect.width() - 48.) / 8.).clamp(15., 28.);
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(rect.shrink2(vec2(9., 3.)))
+                            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = 1.;
+                            if rail_button(ui, RailIcon::Close, "Close window", width, false)
                                 .clicked()
                             {
-                                canvas.spatial.placing = !canvas.spatial.placing;
-                                if compact {
-                                    ui.close();
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                            if !self.machine.desktop {
+                                let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                                if rail_button(
+                                    ui,
+                                    if max {
+                                        RailIcon::Restore
+                                    } else {
+                                        RailIcon::Maximize
+                                    },
+                                    "Maximize / restore",
+                                    width,
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
                                 }
                             }
-                            if ui.selectable_label(false, "Search").clicked() {
+                            ui.separator();
+                            if rail_button(ui, RailIcon::Settings, "Settings", width, false)
+                                .clicked()
+                            {
+                                self.showing_settings = true;
+                            }
+                            if rail_button(ui, RailIcon::Trash, "Recycle bin", width, false)
+                                .clicked()
+                            {
+                                self.show_bin = true;
+                            }
+                            if rail_button(ui, RailIcon::Search, "Search cards", width, false)
+                                .clicked()
+                            {
                                 self.flat_list = Some(list::FlatList::open(&canvas.board));
-                                if compact {
-                                    ui.close();
-                                }
                             }
                             if count > 0 {
-                                let inbox = ui.selectable_label(false, format!("Inbox +{count}"));
-                                egui::Popup::menu(&inbox).gap(5.).show(|ui| {
-                                    let mut pin = None;
+                                let r = rail_button(
+                                    ui,
+                                    RailIcon::Inbox,
+                                    &format!("Inbox · {count} pending"),
+                                    width,
+                                    false,
+                                );
+                                ui.painter().text(
+                                    r.rect.right_top(),
+                                    egui::Align2::RIGHT_TOP,
+                                    count.to_string(),
+                                    egui::FontId::proportional(9.),
+                                    Color32::WHITE,
+                                );
+                                egui::Popup::menu(&r).gap(5.).show(|ui| {
+                                    let mut selected = None;
                                     egui::ScrollArea::vertical()
                                         .max_height(240.)
                                         .show(ui, |ui| {
-                                            for file in canvas.board.inbox() {
-                                                if ui.button(file).clicked() {
-                                                    pin = Some(file.clone());
+                                            for f in canvas.board.inbox() {
+                                                if ui.button(f).clicked() {
+                                                    selected = Some(f.clone());
                                                     ui.close();
                                                 }
                                             }
                                         });
-                                    if let Some(file) = pin
-                                        && let Err(e) = canvas.board.pin_files(&[file])
+                                    if let Some(f) = selected
+                                        && let Err(e) = canvas.board.pin_files(&[f])
                                     {
                                         self.error = e.to_string();
                                     }
                                 });
+                            } else {
+                                ui.add_enabled_ui(false, |ui| {
+                                    rail_button(
+                                        ui,
+                                        RailIcon::Inbox,
+                                        "Inbox is empty",
+                                        width,
+                                        false,
+                                    );
+                                });
                             }
-                            if ui.selectable_label(false, "Recycle bin").clicked() {
-                                self.show_bin = true;
-                                if compact {
-                                    ui.close();
+                            if rail_button(
+                                ui,
+                                RailIcon::Pin,
+                                "Place bare tack",
+                                width,
+                                canvas.spatial.placing,
+                            )
+                            .clicked()
+                            {
+                                canvas.spatial.placing = !canvas.spatial.placing;
+                            }
+                            let available = ui.available_rect_before_wrap();
+                            if available.width() > 8. {
+                                let title = ui.painter().with_clip_rect(available);
+                                title.text(
+                                    available.left_center(),
+                                    egui::Align2::LEFT_CENTER,
+                                    folder(&canvas.board),
+                                    egui::FontId::proportional(14.),
+                                    Color32::from_gray(232),
+                                );
+                                if !self.parents.is_empty() {
+                                    let r = ui.interact(
+                                        available.intersect(Rect::from_min_size(
+                                            available.min,
+                                            vec2(140., available.height()),
+                                        )),
+                                        ui.id().with("ancestors"),
+                                        Sense::click(),
+                                    );
+                                    egui::Popup::menu(&r).show(|ui| {
+                                        for (i, a) in self.parents.iter().enumerate() {
+                                            if ui.button(folder(&a.board)).clicked() {
+                                                parent = Some(i);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
                                 }
                             }
-                            if ui.selectable_label(false, "Settings").clicked() {
-                                self.showing_settings = true;
-                                if compact {
-                                    ui.close();
-                                }
-                            }
-                        };
-                        if compact {
-                            ui.menu_button("Tools", tools);
-                        } else {
-                            tools(ui);
-                        }
-                        ui.menu_button("Board", |ui| {
-                            for (i, ancestor) in self.parents.iter().enumerate() {
-                                if ui
-                                    .button(format!("Return to {}", folder(&ancestor.board)))
-                                    .clicked()
-                                {
-                                    parent = Some(i);
-                                    ui.close();
-                                }
-                            }
-                            if !self.machine.desktop && ui.button("Maximize / restore").clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(
-                                    !ctx.input(|i| i.viewport().maximized.unwrap_or(false)),
-                                ));
-                                ui.close();
-                            }
-                            if ui.button("Close").clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
-                        });
-                    }
+                        },
+                    );
                 });
-            });
+        }
         if let Some(n) = parent {
             self.parents.truncate(n + 1);
             self.canvas = self.parents.pop();

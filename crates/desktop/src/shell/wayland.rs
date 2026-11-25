@@ -177,6 +177,14 @@ pub fn run(app: &mut BoardWindow) -> io::Result<Exit> {
         }
         for cmd in &out.viewport_output[&egui::ViewportId::ROOT].commands {
             match cmd {
+                egui::ViewportCommand::RequestPaste => {
+                    if let Ok(text) = host.clipboard.load()
+                        && !text.is_empty()
+                    {
+                        host.input.events.push(egui::Event::Paste(text));
+                        host.redraw();
+                    }
+                }
                 egui::ViewportCommand::Close => return Ok(Exit::Quit),
                 egui::ViewportCommand::Visible(visible) if *visible == host.hidden => {
                     host.hidden = !*visible;
