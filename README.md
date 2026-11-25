@@ -22,12 +22,12 @@ corktop turns a folder into a desktop corkboard. Pin notes, screenshots, links, 
 
 ## Download
 
-| Platform | 1.0.0 RC12 | To launch |
+| Platform | 1.0.0 | To launch |
 | --- | --- | --- |
-| Windows x64 | [Download ZIP](https://github.com/piercehanlon/corktop/releases/download/v1.0.0-rc.12/corktop-1.0.0-windows-x64.zip) | Extract the folder and open `corktop.exe`. The executable is unsigned. Windows SmartScreen or Smart App Control may warn or block it. [Build from source](#build-from-source). |
-| Linux x86-64 | [Download tar.gz](https://github.com/piercehanlon/corktop/releases/download/v1.0.0-rc.12/corktop-1.0.0-linux-x64.tar.gz) | Extract the folder and run `./corktop` inside it. This build requires glibc 2.35 or later, libxkbcommon, and an OpenGL-capable X11 or Wayland session. |
+| Windows x64 | [Download ZIP](https://github.com/piercehanlon/corktop/releases/download/v1.0.0/corktop-1.0.0-windows-x64.zip) | Extract the folder and open `corktop.exe`. The executable is unsigned. Windows SmartScreen or Smart App Control may warn or block it. [Build from source](#build-from-source). |
+| Linux x86-64 | [Download tar.gz](https://github.com/piercehanlon/corktop/releases/download/v1.0.0/corktop-1.0.0-linux-x64.tar.gz) | Extract the folder and run `./corktop` inside it. This build requires glibc 2.35 or later, libxkbcommon, and an OpenGL-capable X11 or Wayland session. |
 
-The release includes SHA-256 checksums for both downloads. If your Linux distribution has an older glibc, build from source using the instructions below. [Release notes and checksums](https://github.com/piercehanlon/corktop/releases/tag/v1.0.0-rc.12)
+The release includes SHA-256 checksums for both downloads. If your Linux distribution has an older glibc, build from source using the instructions below. [Release notes and checksums](https://github.com/piercehanlon/corktop/releases/tag/v1.0.0)
 
 ## Make your first board
 
