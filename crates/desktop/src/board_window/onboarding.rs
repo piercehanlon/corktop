@@ -83,7 +83,7 @@ const LESSONS: [(&str, &str); 4] = [
     ),
     (
         "Follow the thread",
-        "Hold a tack, drag to another card and release. Scroll to change color.",
+        "Drag a pinhead to another card and release. Scroll to change color.",
     ),
     (
         "Mark a zone",

@@ -333,6 +333,36 @@ impl Board {
         })
     }
 
+    pub fn recolor_pin_string(&mut self, anchor: bool, index: usize, color: u8) -> io::Result<()> {
+        self.edit_geometry(|g| {
+            let slot = if anchor {
+                g.anchors.get_mut(index).map(|a| &mut a.color)
+            } else {
+                g.dividers.get_mut(index).map(|d| &mut d.color)
+            };
+            *slot.ok_or_else(|| invalid("unknown thread"))? = color;
+            Ok(())
+        })
+    }
+    pub fn rename_zone(&mut self, index: usize, name: String) -> io::Result<()> {
+        self.edit_geometry(|g| {
+            g.zones
+                .get_mut(index)
+                .ok_or_else(|| invalid("unknown zone"))?
+                .title = name;
+            Ok(())
+        })
+    }
+    pub fn dissolve_zone(&mut self, index: usize) -> io::Result<()> {
+        self.edit_geometry(|g| {
+            if index >= g.zones.len() {
+                return Err(invalid("unknown zone"));
+            }
+            g.zones.remove(index);
+            Ok(())
+        })
+    }
+
     pub fn name_zone(&mut self, pins: Vec<usize>, title: String) -> io::Result<()> {
         self.edit_geometry(|g| {
             for (&a, &b) in pins.iter().zip(pins.iter().cycle().skip(1)) {

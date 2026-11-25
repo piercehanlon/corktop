@@ -89,9 +89,9 @@ try {
     foreach ($name in 'Choice one.txt','Choice two.txt') {
         if (![IO.File]::Exists((Join-Path $files $name))) { throw 'Linked source disappeared' }
     }
-    Confirm-Step 'Change the material kit in Settings. Open the Search in the banner, search Witness and choose it. Did the board reveal the note? Right-click its body, change its paper color, and apply.'
+    Confirm-Step 'Change the material kit in Settings. Open Search in the top bar, search Witness and choose it. Did the board reveal the note? Right-click its body, choose a paper swatch.'
     if ([IO.File]::ReadAllText($manifest) -notmatch '(?m)^tone = [0-3]') { throw 'Card color missing' }
-    Confirm-Step 'Choose Place tack for each of three corners around Witness. Hold and drag between the tacks to close the triangle, then name the zone. Is its label visible?'
+    Confirm-Step 'Choose Place tack for each of three corners around Witness. Drag directly between the tacks to close the triangle, then name the zone. Is its label visible?'
     function Zone-Pins {
         $match = [regex]::Match([IO.File]::ReadAllText($manifest),'(?ms)^\[geometry\]\s*.*?^pins\s*=\s*(\[\s*\[.*?\]\s*\])')
         if (!$match.Success) { throw 'Zone pin coordinates missing' }
@@ -101,6 +101,7 @@ try {
     $beforeZone = Zone-Pins
     Confirm-Step 'Drag the zone label a short distance toward open space. Did its outline follow your pointer, and did the tacks and Witness move when you released?'
     if ((Zone-Pins) -ceq $beforeZone) { throw 'Dragging the zone did not change its saved tack positions' }
+    Confirm-Step 'Double-click the zone label and rename it. Drag empty top bar space to a screen edge to try Windows Snap, double-click the bar to maximize and restore, and resize from the edges and corners. Did the label and window respond?'
     Confirm-Step 'Try Desktop mode and return to a standard window. Hide and show with the tray. Open a separate panel from the tray and close that panel. Did the original board remain responsive?'
     $desktop = Read-Host 'Which desktop mode result did you observe? Enter attached or fallback'
     if ($desktop -notin 'attached','fallback') { throw 'Desktop mode observation required' }

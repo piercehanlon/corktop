@@ -24,7 +24,7 @@ function Confirm-View($message) {
     if ($app.HasExited) { throw 'Board exited unexpectedly' }
 }
 function Close-Board {
-    $null = Read-Host 'Choose Board > Close in corktop, then press Enter here'
+    $null = Read-Host 'Click the top-right Close icon in corktop, then press Enter here'
     if (!$app.WaitForExit(5000) -or $app.ExitCode -ne 0) { throw 'Window did not close cleanly' }
     $app.Dispose()
 }
@@ -58,7 +58,7 @@ try {
     if ((Card-State) -ceq $before) { throw 'Move did not persist' }
     Check-Clipboard $sentinel
     $before = Card-State
-    Confirm-View 'Hold the top-center tack of the left card briefly and drag to the upper-right card. Repeat from the left tack to the lower-right card. Are both strands visible under the pinheads with a small shadow?'
+    Confirm-View 'Drag the top-center tack of the left card directly to the upper-right card. Repeat from the left tack to the lower-right card. Are both strands visible under the pinheads with a small shadow?'
     $pairs = @(Get-Pairs)
     $keep = ($names[0],$names[1] | Sort-Object) -join '|'
     $remove = ($names[0],$names[2] | Sort-Object) -join '|'

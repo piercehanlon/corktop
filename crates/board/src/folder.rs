@@ -154,6 +154,24 @@ impl Card {
         Ok(card)
     }
 
+    pub fn display_title(&self) -> &str {
+        if let Some(title) = &self.title {
+            return title;
+        }
+        let first = self.text.lines().next().unwrap_or("");
+        if !first.is_empty() && first != self.file {
+            return first;
+        }
+        let file = self.file.as_str();
+        let name = file
+            .split_once('_')
+            .filter(|(stamp, _)| stamp.len() >= 9 && stamp.bytes().all(|b| b.is_ascii_digit()))
+            .map_or(file, |(_, name)| name);
+        name.rsplit_once('.')
+            .filter(|(_, ext)| ext.eq_ignore_ascii_case("corklink"))
+            .map_or(name, |(stem, _)| stem)
+    }
+
     pub fn revision(&self) -> Option<(SystemTime, u64)> {
         self.revision
     }
@@ -527,6 +545,66 @@ impl Board {
         self.commit_layout(next)
     }
 
+    pub fn recolor_string(&mut self, pair: [usize; 2], color: u8) -> io::Result<()> {
+        let index = self
+            .strings
+            .iter()
+            .position(|ends| *ends == pair)
+            .ok_or_else(|| invalid("unknown string"))?;
+        if color >= 6 {
+            return Err(invalid("unknown color"));
+        }
+        let mut next = self.manifest.clone();
+        let ends = next["strings"].as_array_mut().unwrap()[index]
+            .as_array_mut()
+            .unwrap();
+        ends.truncate(2);
+        ends.push(i64::from(color).into());
+        self.commit_layout(next)
+    }
+    pub fn cut_card_strings(&mut self, idx: usize) -> io::Result<()> {
+        let name = &self
+            .cards
+            .get(idx)
+            .ok_or_else(|| invalid("unknown card"))?
+            .file;
+        let mut next = self.manifest.clone();
+        if let Some(pairs) = next.get_mut("strings").and_then(Value::as_array_mut) {
+            pairs.retain(|p| {
+                !p.as_array()
+                    .is_some_and(|ends| ends.iter().any(|e| e.as_str() == Some(name)))
+            });
+        }
+        let mut g = self.geometry.clone();
+        g.anchors.retain(|a| &a.file != name);
+        next.insert(
+            "geometry".into(),
+            Value::try_from(g).map_err(io::Error::other)?,
+        );
+        self.commit_layout(next)
+    }
+    pub fn edit_note(&mut self, idx: usize, original: &str, text: &str) -> io::Result<()> {
+        use std::io::Write;
+        let path = self.note_path(idx)?;
+        if !is_text(&self.cards[idx].file) || text.len() > NOTE_LIMIT {
+            return Err(invalid("unsupported note or note too large"));
+        }
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.root)?;
+        tmp.write_all(text.as_bytes())?;
+        tmp.as_file()
+            .set_permissions(path.metadata()?.permissions())?;
+        tmp.as_file().sync_all()?;
+        self.check_manifest()?;
+        if self.note_text(idx)? != original {
+            return Err(invalid(
+                "file changed on disk; cancel and reopen the editor",
+            ));
+        }
+        tmp.persist(&path)?;
+        self.cards[idx].revision = None;
+        self.cards[idx].refresh(&self.root)
+    }
+
     pub fn cut(&mut self, a: usize, b: usize) -> io::Result<()> {
         let pair = [a.min(b), a.max(b)];
         let Some(index) = self.strings.iter().position(|ends| ends == &pair) else {
@@ -744,6 +822,37 @@ impl Board {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn friendly_attachment_titles_preserve_the_file_and_custom_title() {
+        let root = tempfile::tempdir().unwrap();
+        for (file, title) in [
+            ("1795615436_Link.txt.corklink", "Link.txt"),
+            ("1795615468_clip.png", "clip.png"),
+            ("42_case.png", "42_case.png"),
+        ] {
+            fs::write(root.path().join(file), []).unwrap();
+            let mut card = Card::load(root.path(), file, [0, 0]).unwrap();
+            assert_eq!(card.display_title(), title);
+            assert_eq!(card.file, file);
+            card.title = Some("Witness".into());
+            assert_eq!(card.display_title(), "Witness");
+        }
+    }
+
+    #[test]
+    fn inline_edit_keeps_the_file_and_rejects_stale_text() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("First", [21, 32]).unwrap();
+        let path = board.note_path(0).unwrap();
+        let original = board.note_text(0).unwrap();
+        board.edit_note(0, &original, "Second").unwrap();
+        assert_eq!(board.note_path(0).unwrap(), path);
+        fs::write(&path, "External edit").unwrap();
+        assert!(board.edit_note(0, "Second", "Third").is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "External edit");
+    }
 
     #[test]
     fn restore_link_when_both_endpoints_were_recycled_and_only_purge_tracked_files() {

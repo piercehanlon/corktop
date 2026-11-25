@@ -51,6 +51,34 @@ impl Images {
         }
     }
 
+    pub(super) fn paste_menu(
+        &mut self,
+        board: &mut Board,
+        pos: [i32; 2],
+        link: bool,
+        ctx: &egui::Context,
+    ) -> io::Result<()> {
+        if let Ok(paths) = self.clipboard_files()
+            && !paths.is_empty()
+        {
+            for path in paths {
+                board.import_file(&path, free_paste_position(board, pos), link, false)?;
+            }
+            return Ok(());
+        }
+        if let Ok(text) = self
+            .clipboard()
+            .and_then(|c| c.get_text().map_err(io::Error::other))
+            && !text.trim().is_empty()
+        {
+            return board.paste_text(&text, pos);
+        }
+        if self.clipboard().is_err() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            return Ok(());
+        }
+        self.paste(board, pos)
+    }
     pub(super) fn paste(&mut self, board: &mut Board, pos: [i32; 2]) -> io::Result<()> {
         let clip = self.clipboard()?;
         let img = match clip.get_image() {
