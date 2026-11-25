@@ -13,7 +13,7 @@ fn entries<'a>(table: &'a mut Table, key: &str) -> io::Result<&'a mut Vec<Value>
         .ok_or_else(|| invalid("invalid board records"))
 }
 
-fn copy_without_overwrite(source: &Path, destination: &Path) -> io::Result<()> {
+pub(super) fn copy_without_overwrite(source: &Path, destination: &Path) -> io::Result<()> {
     let dest_dir = destination
         .parent()
         .ok_or_else(|| invalid("missing destination directory"))?;
@@ -175,6 +175,17 @@ impl Board {
                         }
                     }
                 }
+                if let Some(anchors) = next
+                    .get_mut("geometry")
+                    .and_then(|g| g.get_mut("anchors"))
+                    .and_then(Value::as_array_mut)
+                {
+                    for a in anchors {
+                        if a.get("file").and_then(Value::as_str) == Some(&old) {
+                            a["file"] = name.clone().into();
+                        }
+                    }
+                }
                 copy_without_overwrite(&source, &self.root.join(&name))?;
                 Some(name)
             }
@@ -185,6 +196,7 @@ impl Board {
             }
             return Err(e);
         }
+        self.geometry = Geometry::load(&next)?;
         self.cards[idx].title = Some(title.into());
         self.manifest = next;
         if let Some(name) = renamed {
@@ -297,7 +309,7 @@ impl Board {
         {
             let Some(ends) = pair
                 .as_array()
-                .filter(|p| p.len() == 2 && references(pair, name))
+                .filter(|p| (2..=3).contains(&p.len()) && references(pair, name))
             else {
                 return Err(invalid("invalid trash link"));
             };

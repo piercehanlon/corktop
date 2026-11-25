@@ -4,6 +4,7 @@ use std::{path::Path, time::Duration};
 
 mod images;
 mod opener;
+mod spatial;
 
 const CARD_SIZE: Vec2 = vec2(220.0, 112.0);
 
@@ -13,14 +14,23 @@ struct Draft {
     focus: bool,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Thread {
+    Cards([usize; 2]),
+    Divider(usize),
+    Anchor(usize),
+}
+
 struct TackDrag {
     source: usize,
     started: f64,
     armed: bool,
+    color: usize,
 }
 
 struct Canvas {
     board: Board,
+    spatial: spatial::Spatial,
     enter: Option<usize>,
     edit_title: Option<(usize, String)>,
     confirm_empty: bool,
@@ -38,7 +48,7 @@ struct Canvas {
     pending_copy: Option<(usize, f64)>,
     copied: Option<(usize, f64)>,
     paste_at: Option<[i32; 2]>,
-    cut_menu: Option<([usize; 2], Pos2)>,
+    cut_menu: Option<(Thread, Pos2)>,
 }
 
 #[derive(Default)]
@@ -81,6 +91,7 @@ impl BoardWindow {
                     open_error_tx,
                     open_error_rx,
                     board,
+                    spatial: Default::default(),
                     enter: None,
                     edit_title: None,
                     confirm_empty: false,
@@ -136,6 +147,13 @@ impl eframe::App for BoardWindow {
                         });
                         canvas.display_only = prefs.flag("display_only_titles", false);
                         canvas.link_drops = prefs.flag("link_file_drops", false);
+                    }
+                    if ui
+                        .selectable_label(canvas.spatial.placing, "Pin")
+                        .on_hover_text("Place a bare tack on the board")
+                        .clicked()
+                    {
+                        canvas.spatial.placing = !canvas.spatial.placing;
                     }
                     let trash = canvas.board.trashed_files();
                     if !trash.is_empty() {
@@ -283,15 +301,64 @@ impl Canvas {
         }
         ui.ctx()
             .request_repaint_after(self.next_refresh.saturating_duration_since(time));
-        let mut size = viewport;
-        for card in self.board.cards() {
-            size = size.max(offset(card.position) + CARD_SIZE);
+        if self.draft.is_none()
+            && self.edit_title.is_none()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Z))
+        {
+            self.board.undo_layout()?;
+            ui.ctx().request_repaint();
         }
-        if let Some(draft) = &self.draft {
-            size = size.max(offset(draft.position) + CARD_SIZE);
-        }
-        let (canvas, background) = ui.allocate_exact_size(size, Sense::click());
+        let extent = offset(self.board.canvas_size());
+        let scale = (viewport.x / extent.x)
+            .min(viewport.y / extent.y)
+            .clamp(0.72, 2.0);
+        let (canvas, background) = ui.allocate_exact_size(extent * scale, Sense::click());
         let origin = canvas.min;
+        let card_position = |p: Vec2| logical((p / scale).min(extent - CARD_SIZE));
+        let mut refit = false;
+        if self.cut_menu.is_none() {
+            background.context_menu(|ui| {
+                if ui.button("Refit to Current Frame").clicked() {
+                    refit = true;
+                    ui.close();
+                }
+            });
+        }
+        if refit {
+            self.board.refit(logical(viewport))?;
+            ui.ctx().request_repaint();
+            return Ok(());
+        }
+        let clip = ui.clip_rect().intersect(canvas);
+        for (a, b, visible) in [
+            (
+                clip.left_top(),
+                clip.left_bottom(),
+                canvas.left() < clip.left() - 1.0,
+            ),
+            (
+                clip.right_top(),
+                clip.right_bottom(),
+                canvas.right() > clip.right() + 1.0,
+            ),
+            (
+                clip.left_top(),
+                clip.right_top(),
+                canvas.top() < clip.top() - 1.0,
+            ),
+            (
+                clip.left_bottom(),
+                clip.right_bottom(),
+                canvas.bottom() > clip.bottom() + 1.0,
+            ),
+        ] {
+            if visible {
+                ui.painter().line_segment(
+                    [a, b],
+                    egui::Stroke::new(5.0, Color32::from_black_alpha(60)),
+                );
+            }
+        }
         let mods = ui.input(|i| i.modifiers);
         if ui.input(|i| !i.raw.hovered_files.is_empty()) {
             let label = if mods.shift {
@@ -311,7 +378,7 @@ impl Canvas {
         let files = ui.input(|i| i.raw.dropped_files.clone());
         for (n, file) in files.iter().enumerate() {
             if let Some(path) = &file.path {
-                let pos = logical(
+                let pos = card_position(
                     ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin) - origin
                         + vec2(0.0, n as f32 * 26.0),
                 );
@@ -334,7 +401,7 @@ impl Canvas {
                 .moving
                 .filter(|(i, _)| *i == idx)
                 .map_or(card.position, |(_, pos)| pos);
-            let rect = Rect::from_min_size(origin + offset(position), CARD_SIZE);
+            let rect = Rect::from_min_size(origin + offset(position) * scale, CARD_SIZE * scale);
             let response = ui.interact(rect, ui.id().with(("card", idx)), Sense::click_and_drag());
             if self.draft.is_none() && (response.dragged() || response.drag_stopped()) {
                 self.pending_copy = None;
@@ -345,7 +412,7 @@ impl Canvas {
                         .map(|(p, start)| p - start)
                 });
                 if let Some(delta) = delta {
-                    self.moving = Some((idx, logical(offset(card.position) + delta)));
+                    self.moving = Some((idx, card_position(offset(card.position) * scale + delta)));
                 }
                 if response.drag_stopped() {
                     dropped = self.moving.take();
@@ -433,6 +500,7 @@ impl Canvas {
                     source: idx,
                     started: ui.input(|i| i.time),
                     armed: false,
+                    color: 0,
                 });
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(200));
@@ -450,26 +518,30 @@ impl Canvas {
                 .take(480)
                 .collect();
             painter.text(
-                rect.min + vec2(10.0, 21.0),
+                rect.min + vec2(10.0, 21.0) * scale,
                 egui::Align2::LEFT_TOP,
                 if card.missing {
                     format!("Missing: {}", card.file)
                 } else {
                     card.title.clone().unwrap_or(title)
                 },
-                egui::FontId::proportional(18.0),
+                egui::FontId::proportional(18.0 * scale),
                 Color32::from_gray(32),
             );
             let text = painter.layout(
                 body,
-                egui::FontId::proportional(14.0),
+                egui::FontId::proportional(14.0 * scale),
                 Color32::from_gray(45),
-                CARD_SIZE.x - 20.0,
+                (CARD_SIZE.x - 20.0) * scale,
             );
             if !card.missing && images::supported(&card.file) {
                 self.images.preview(&self.board, idx, ui, rect);
             }
-            painter.galley(rect.min + vec2(10.0, 47.0), text, Color32::from_gray(45));
+            painter.galley(
+                rect.min + vec2(10.0, 47.0) * scale,
+                text,
+                Color32::from_gray(45),
+            );
         }
         if let Some(idx) = remove {
             self.board.remove_card(idx)?;
@@ -523,14 +595,14 @@ impl Canvas {
         if background.clicked()
             && let Some(p) = background.interact_pointer_pos()
         {
-            self.paste_at = Some(logical(p - origin));
+            self.paste_at = Some(card_position(p - origin));
         }
         if self.draft.is_none()
             && self.cut_menu.is_none()
             && self.moving.is_none()
             && self.tack_drag.is_none()
         {
-            self.paste_notes(ui, origin)?;
+            self.paste_notes(ui, origin, scale, extent)?;
         }
         if let Some((idx, pos)) = dropped {
             let target = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
@@ -553,19 +625,28 @@ impl Canvas {
             }
             self.board.move_card(idx, pos)?;
         }
-        self.show_strings(ui, &rects)?;
+        self.show_strings(ui, &rects, origin, scale)?;
+        self.spatial
+            .show(&mut self.board, ui, origin, scale, &background)?;
+        if self.board.cards().len() != rects.len() {
+            self.copied = None;
+            self.pending_copy = None;
+            self.cut_menu = None;
+            self.tack_drag = None;
+        }
         if self.draft.is_none()
             && background.double_clicked()
             && let Some(p) = background.interact_pointer_pos()
         {
             self.draft = Some(Draft {
-                position: logical(p - origin),
+                position: card_position(p - origin),
                 text: String::new(),
                 focus: true,
             });
         }
         if let Some(draft) = &mut self.draft {
-            let rect = Rect::from_min_size(origin + offset(draft.position), CARD_SIZE);
+            let rect =
+                Rect::from_min_size(origin + offset(draft.position) * scale, CARD_SIZE * scale);
             let commit = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, Key::Enter));
             let outside = ui.input(|i| {
                 i.pointer.any_pressed()
@@ -612,6 +693,7 @@ impl Canvas {
             self.copied = Some((idx, now + 0.65));
         }
         if let Some((idx, until)) = self.copied
+            && idx < cards.len()
             && now < until
         {
             ui.ctx()
@@ -627,7 +709,13 @@ impl Canvas {
         Ok(())
     }
 
-    fn paste_notes(&mut self, ui: &egui::Ui, origin: Pos2) -> std::io::Result<()> {
+    fn paste_notes(
+        &mut self,
+        ui: &egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        extent: Vec2,
+    ) -> std::io::Result<()> {
         let pastes = ui.input(|i| {
             i.events
                 .iter()
@@ -661,17 +749,27 @@ impl Canvas {
             paste_released
         });
         if release && !std::mem::take(&mut self.pasted_text) {
-            let pos = self
-                .paste_at
-                .unwrap_or_else(|| logical(ui.clip_rect().min - origin + vec2(12.0, 12.0)));
+            let pos = self.paste_at.unwrap_or_else(|| {
+                logical(
+                    ((ui.clip_rect().min - origin + vec2(12.0, 12.0)) / scale)
+                        .min(extent - CARD_SIZE),
+                )
+            });
             self.images.paste(&mut self.board, pos)?;
         }
         for text in pastes {
-            let mut pos = self
-                .paste_at
-                .unwrap_or_else(|| logical(ui.clip_rect().min - origin + vec2(12.0, 12.0)));
-            while self.board.cards().iter().any(|c| c.position == pos) {
-                pos[1] = if pos[1] <= 999_970 { pos[1] + 26 } else { 0 };
+            let mut pos = self.paste_at.unwrap_or_else(|| {
+                logical(
+                    ((ui.clip_rect().min - origin + vec2(12.0, 12.0)) / scale)
+                        .min(extent - CARD_SIZE),
+                )
+            });
+            for _ in 0..self.board.cards().len() {
+                if !self.board.cards().iter().any(|c| c.position == pos) {
+                    break;
+                }
+                pos[1] = (pos[1] + 26) % (extent.y as i32 - 111);
+                pos[0] = (pos[0] + 8) % (extent.x as i32 - 219);
             }
             self.board.paste_text(&text, pos)?;
             ui.ctx().request_repaint();
@@ -679,16 +777,48 @@ impl Canvas {
         Ok(())
     }
 
-    fn show_strings(&mut self, ui: &mut egui::Ui, cards: &[Rect]) -> std::io::Result<()> {
+    fn show_strings(
+        &mut self,
+        ui: &mut egui::Ui,
+        cards: &[Rect],
+        origin: Pos2,
+        scale: f32,
+    ) -> std::io::Result<()> {
         let pointer = ui.input(|i| i.pointer.interact_pos());
-        let stroke = egui::Stroke::new(2.5, Color32::from_rgb(218, 83, 73));
+
         let right_click = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
             && ui.ui_contains_pointer()
             && self.draft.is_none();
         let mut closest = None;
         let mut distance = 12.0;
-        for &[a, b] in self.board.strings() {
-            let path = strand(tack(cards[a]), tack(cards[b]));
+        let mut threads = Vec::new();
+        for (i, &pair @ [a, b]) in self.board.strings().iter().enumerate() {
+            threads.push((
+                Thread::Cards(pair),
+                strand(tack(cards[a]), tack(cards[b])),
+                self.board.thread_color(i),
+            ));
+        }
+        let g = self.board.geometry();
+        let pin = |i: usize| origin + offset(g.pins[i]) * scale;
+        let straight = |a: Pos2, b: Pos2| std::array::from_fn(|j| a.lerp(b, j as f32 / 16.0));
+        for (i, d) in g.dividers.iter().enumerate() {
+            threads.push((
+                Thread::Divider(i),
+                straight(pin(d.pins[0]), pin(d.pins[1])),
+                usize::from(d.color),
+            ));
+        }
+        for (i, a) in g.anchors.iter().enumerate() {
+            if let Some(idx) = self.board.cards().iter().position(|c| c.file == a.file) {
+                threads.push((
+                    Thread::Anchor(i),
+                    straight(tack(cards[idx]), pin(a.pin)),
+                    usize::from(a.color),
+                ));
+            }
+        }
+        for (target, path, _) in &threads {
             if ui.ui_contains_pointer()
                 && self.draft.is_none()
                 && let Some(p) = pointer
@@ -700,19 +830,19 @@ impl Canvas {
                     let d = (segment[0] + t * v).distance(p);
                     if d <= distance {
                         distance = d;
-                        closest = Some(([a, b], p));
+                        closest = Some((*target, p));
                     }
                 }
             }
         }
         let selected = self.cut_menu.or(closest).map(|(pair, _)| pair);
-        for &pair @ [a, b] in self.board.strings() {
-            let ink = if selected == Some(pair) {
+        for (target, path, color) in threads {
+            let ink = if selected == Some(target) {
                 egui::Stroke::new(4.5, Color32::from_rgb(248, 99, 64))
             } else {
-                stroke
+                egui::Stroke::new(2.5, spatial::THREADS[color])
             };
-            paint_yarn(ui, strand(tack(cards[a]), tack(cards[b])), ink);
+            paint_yarn(ui, path, ink);
         }
         if let Some(drag) = &mut self.tack_drag {
             let elapsed = ui.input(|i| i.time) - drag.started;
@@ -725,13 +855,36 @@ impl Canvas {
             if let Some(p) = pointer
                 && drag.armed
             {
-                paint_yarn(ui, strand(start, p), stroke);
+                let wheel = ui.input(|i| i.raw_scroll_delta.y);
+                if wheel != 0.0 {
+                    drag.color = (drag.color as i32 + wheel.signum() as i32).rem_euclid(6) as usize;
+                }
+                paint_yarn(
+                    ui,
+                    strand(start, p),
+                    egui::Stroke::new(2.5, spatial::THREADS[drag.color]),
+                );
                 if released
                     && let Some(target) = cards.iter().rposition(|rect| rect.contains(p))
                     && source != target
                 {
+                    let color = drag.color as u8;
                     self.tack_drag = None;
-                    self.board.connect(source, target)?;
+                    self.board.connect_colored(source, target, color)?;
+                } else if released && !cards[source].contains(p) {
+                    let pos = logical(
+                        ((p - origin) / scale)
+                            .min(offset(self.board.canvas_size()) - vec2(6.0, 6.0)),
+                    );
+                    let pin = self
+                        .board
+                        .geometry()
+                        .pins
+                        .iter()
+                        .position(|pt| (origin + offset(*pt) * scale).distance(p) <= 12.0);
+                    let color = drag.color as u8;
+                    self.tack_drag = None;
+                    self.board.anchor_card(source, pin, pos, color)?;
                 }
             } else if pointer.is_some_and(|p| p.distance(start) > 16.0) {
                 self.tack_drag = None;
@@ -761,7 +914,7 @@ impl Canvas {
                 egui::Popup::open_id(ui.ctx(), id);
             }
         }
-        if let Some(([a, b], pos)) = self.cut_menu {
+        if let Some((target, pos)) = self.cut_menu {
             let menu = egui::Popup::new(id, ui.ctx().clone(), pos, ui.layer_id())
                 .open_memory(None)
                 .show(|ui| {
@@ -777,7 +930,11 @@ impl Canvas {
             }
             if menu.is_some_and(|response| response.inner) {
                 self.cut_menu = None;
-                self.board.cut(a, b)?;
+                match target {
+                    Thread::Cards([a, b]) => self.board.cut(a, b)?,
+                    Thread::Divider(i) => self.board.cut_divider(i)?,
+                    Thread::Anchor(i) => self.board.cut_anchor(i)?,
+                };
                 ui.ctx().request_repaint();
             }
         }
