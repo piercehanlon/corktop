@@ -74,26 +74,26 @@ impl BoardWindow {
 
 const LESSONS: [(&str, &str); 4] = [
     (
-        "Read the evidence",
-        "Click a card to copy it. Double-click to open its file.",
+        "READ THE EVIDENCE",
+        "Click a card to copy. Double-click to open its file. Right-click for options.",
     ),
     (
-        "Leave a note",
-        "Double-click empty cork, type a note, then press Ctrl+Enter.",
+        "PIN ANYTHING",
+        "Double-click cork to write, paste text/images/links (Ctrl+V), or drop files straight from a folder.",
     ),
     (
-        "Follow the thread",
-        "Drag a pinhead to another card and release. Scroll to change color.",
+        "FOLLOW THE THREAD",
+        "Drag a pinhead to another card. Scroll to change color. Right-click a strand to cut.",
     ),
     (
-        "Mark a zone",
-        "Use Pin to place three tacks. Join them in a closed loop.",
+        "MARK A ZONE",
+        "Use Pin to place three tacks and connect them in a loop. Drag the label to move it.",
     ),
 ];
 
 pub(super) fn tutorial(ctx: &egui::Context, style: &material::Style, continue_label: &str) -> bool {
     let screen = ctx.screen_rect();
-    let columns = if screen.width() > 460. { 2 } else { 1 };
+    let columns = if screen.width() >= 360. { 2 } else { 1 };
     // The lesson cards live only in the UI. Notes made on the surrounding board use normal storage.
     let width = ((screen.width() - 40.) / columns as f32 - 12.).clamp(128., 208.);
     let mut done = false;
@@ -111,49 +111,76 @@ pub(super) fn tutorial(ctx: &egui::Context, style: &material::Style, continue_la
             });
         });
     let t = ctx.input(|i| i.time) as f32;
-    for (i, (title, description)) in LESSONS.iter().enumerate() {
-        let origin = screen.min
-            + vec2(
-                18. + (i % columns) as f32 * (width + 8.),
-                45. + (i / columns) as f32 * 109.,
-            );
-        egui::Area::new(egui::Id::new(("lesson", i)))
-            .default_pos(origin)
-            .default_size(vec2(width, 100.))
-            .movable(true)
+    let draw_card = |ui: &mut egui::Ui, i: usize| {
+        let (title, description) = LESSONS[i];
+        egui::Frame::new()
+            .fill(style.note(title, false))
+            .corner_radius(3.)
+            .inner_margin(8.)
+            .show(ui, |ui| {
+                ui.set_width(width - 16.);
+                let (r, _) = ui.allocate_exact_size(vec2(width - 16., 22.), Sense::hover());
+                style.pin(ui.painter(), r.center_top() + vec2(0., 2.));
+                let ink = if style.note(title, false).intensity() < 0.45 {
+                    Color32::WHITE
+                } else {
+                    Color32::from_gray(38)
+                };
+                hint(
+                    ui.painter(),
+                    r.left_center() + vec2(5., 0.),
+                    i,
+                    (t * 0.6 + i as f32 * 0.2).fract(),
+                    ink,
+                );
+                ui.label(egui::RichText::new(title).font(style.title(16.)).color(ink));
+                ui.label(
+                    egui::RichText::new(description)
+                        .font(style.body(13.))
+                        .color(ink),
+                );
+            });
+    };
+    let top = screen.top() + 45.;
+    let height = (screen.height() - 100.).max(32.);
+    if columns == 1 || height < 290. {
+        egui::Area::new("compact-tutorial".into())
+            .fixed_pos(egui::pos2(screen.left() + 12., top))
+            .movable(false)
             .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(style.note(title, false))
-                    .corner_radius(3.)
-                    .inner_margin(8.)
+                ui.set_width((width + 8.) * columns as f32);
+                egui::ScrollArea::vertical()
+                    .max_height(height)
                     .show(ui, |ui| {
-                        ui.set_width(width - 16.);
-                        let (r, _) = ui.allocate_exact_size(vec2(width - 16., 22.), Sense::hover());
-                        style.pin(ui.painter(), r.center_top() + vec2(0., 2.));
-                        let ink = if style.note(title, false).intensity() < 0.45 {
-                            Color32::WHITE
-                        } else {
-                            Color32::from_gray(38)
-                        };
-                        hint(
-                            ui.painter(),
-                            r.left_center() + vec2(5., 0.),
-                            i,
-                            (t * 0.6 + i as f32 * 0.2).fract(),
-                            ink,
-                        );
-                        ui.label(
-                            egui::RichText::new(*title)
-                                .font(style.title(16.))
-                                .color(ink),
-                        );
-                        ui.label(
-                            egui::RichText::new(*description)
-                                .font(style.body(13.))
-                                .color(ink),
-                        );
+                        for first in (0..LESSONS.len()).step_by(columns) {
+                            ui.horizontal_top(|ui| {
+                                for i in first..first + columns {
+                                    ui.allocate_ui_with_layout(
+                                        vec2(width, 0.),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| draw_card(ui, i),
+                                    );
+                                }
+                            });
+                        }
                     });
             });
+    } else {
+        let mut second_row = top;
+        for i in 0..LESSONS.len() {
+            let origin = egui::pos2(
+                screen.left() + 18. + (i % columns) as f32 * (width + 8.),
+                if i < columns { top } else { second_row },
+            );
+            let card = egui::Area::new(egui::Id::new(("lesson", i)))
+                .default_pos(origin)
+                .default_size(vec2(width, 100.))
+                .movable(true)
+                .show(ctx, |ui| draw_card(ui, i));
+            if i < columns {
+                second_row = second_row.max(top + card.response.rect.height() + 8.);
+            }
+        }
     }
     ctx.request_repaint_after(Duration::from_millis(100));
     done

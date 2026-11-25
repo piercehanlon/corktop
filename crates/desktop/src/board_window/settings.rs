@@ -43,7 +43,7 @@ impl BoardWindow {
                         }
                     });
             });
-        self.showing_settings = show;
+        self.showing_settings &= show;
     }
     fn settings_board(&mut self, ui: &mut egui::Ui) {
         ui.strong("Board folder");
@@ -197,7 +197,20 @@ impl BoardWindow {
         {
             match prefs.set("tutorial_seen", false.into()) {
                 Ok(()) => {
+                    self.showing_settings = false;
+                    self.show_bin = false;
+                    self.flat_list = None;
+                    if let Some(canvas) = &mut self.canvas {
+                        canvas.options = None;
+                        canvas.edit_title = None;
+                        canvas.confirm_empty = false;
+                        canvas.cut_menu = None;
+                        canvas.spatial = Default::default();
+                        canvas.pending_drop = Default::default();
+                    }
+                    egui::Popup::close_all(ui.ctx());
                     self.tutorial = true;
+                    ui.ctx().request_repaint();
                 }
                 Err(e) => self.error = e.to_string(),
             }
