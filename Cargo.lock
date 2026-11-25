@@ -350,8 +350,10 @@ dependencies = [
 name = "corktop"
 version = "0.4.0"
 dependencies = [
+ "arboard",
  "corktop-board",
  "eframe",
+ "image",
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
@@ -364,6 +366,7 @@ dependencies = [
  "libc",
  "tempfile",
  "toml",
+ "url",
 ]
 
 [[package]]
@@ -1002,6 +1005,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
