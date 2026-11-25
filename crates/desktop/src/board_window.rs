@@ -23,6 +23,7 @@ struct Canvas {
     board: Board,
     images: images::Images,
     pasted_text: bool,
+    typed_v: bool,
     next_refresh: std::time::Instant,
     open_error_tx: std::sync::mpsc::Sender<std::io::Error>,
     open_error_rx: std::sync::mpsc::Receiver<std::io::Error>,
@@ -66,6 +67,7 @@ impl BoardWindow {
                     board,
                     images: Default::default(),
                     pasted_text: false,
+                    typed_v: false,
                     next_refresh: std::time::Instant::now(),
                     draft: None,
                     moving: None,
@@ -497,7 +499,26 @@ impl Canvas {
         if !pastes.is_empty() {
             self.pasted_text = true;
         }
-        let release = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::V, pressed:false, modifiers, ..} if modifiers.command)));
+        // egui-winit consumes the press for Ctrl+V even when the clipboard contains
+        // only an image. Ctrl can already be up by the time V is released.
+        let release = ui.input(|i| {
+            let mut paste_released = false;
+            for event in &i.events {
+                if let egui::Event::Key {
+                    key: Key::V,
+                    pressed,
+                    ..
+                } = event
+                {
+                    if *pressed {
+                        self.typed_v = true;
+                    } else {
+                        paste_released = !std::mem::take(&mut self.typed_v);
+                    }
+                }
+            }
+            paste_released
+        });
         if release && !std::mem::take(&mut self.pasted_text) {
             let pos = self
                 .paste_at
