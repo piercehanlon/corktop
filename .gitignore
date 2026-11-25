@@ -31,3 +31,8 @@ rustc-ice-*.txt
 /arch/
 /.tmp/
 /.run/
+
+# Local credentials and agent workspace state
+/.aws/
+/.codex/
+/.agents/
