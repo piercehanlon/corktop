@@ -61,7 +61,7 @@ pub struct BoardWindow {
     tray: Option<crate::shell::tray::Handle>,
     showing_settings: bool,
     picker_open: bool,
-    minimized: bool,
+    hidden: bool,
     pub machine: crate::shell::MachineState,
     layer: crate::shell::Layer,
     folder: String,
@@ -114,7 +114,8 @@ impl BoardWindow {
                     if let Some(path) = path {
                         self.switch_folder(&path);
                     }
-                    self.minimized = false;
+                    self.hidden = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
@@ -128,10 +129,11 @@ impl BoardWindow {
                     self.error = message;
                 }
                 Action::ToggleVisible => {
-                    self.minimized =
-                        !ctx.input(|i| i.viewport().minimized.unwrap_or(self.minimized));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(self.minimized));
-                    if !self.minimized {
+                    self.hidden =
+                        !self.hidden && !ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!self.hidden));
+                    if !self.hidden {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
                 }
@@ -146,6 +148,8 @@ impl BoardWindow {
                 }
                 Action::Settings => {
                     self.showing_settings = true;
+                    self.hidden = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
@@ -166,10 +170,7 @@ impl BoardWindow {
             }
         }
         match Board::open(path) {
-            Ok(board) => {
-                self.parents.clear();
-                self.show_board(Ok(board));
-            }
+            Ok(board) => self.show_root(Ok(board)),
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => self.open(path),
             Err(e) => self.error = e.to_string(),
         }
@@ -183,22 +184,23 @@ impl BoardWindow {
                     Err(error) => self.error = error.to_string(),
                 }
             }
-            result => self.show_board(result),
+            result => self.show_root(result),
         }
+    }
+
+    fn show_root(&mut self, result: std::io::Result<Board>) {
+        let result = result.and_then(|board| {
+            let preferences = corktop_board::Preferences::load(board.root())?;
+            self.preferences = Some(preferences);
+            self.parents.clear();
+            Ok(board)
+        });
+        self.show_board(result);
     }
 
     fn show_board(&mut self, result: std::io::Result<Board>) {
         match result {
             Ok(board) => {
-                if self.parents.is_empty() {
-                    match corktop_board::Preferences::load(board.root()) {
-                        Ok(p) => self.preferences = Some(p),
-                        Err(e) => {
-                            self.error = e.to_string();
-                            return;
-                        }
-                    }
-                }
                 let (open_error_tx, open_error_rx) = std::sync::mpsc::channel();
                 self.canvas = Some(Canvas {
                     open_error_tx,
@@ -406,9 +408,10 @@ impl eframe::App for BoardWindow {
                 ui.label(format!("This folder contains {count} entries."));
                 if ui.button("Choose an empty folder").clicked() {
                     self.occupied = None;
+                    self.choose();
                 }
                 if ui.button("Stage files in Inbox").clicked() {
-                    self.show_board(Board::stage_folder(&path));
+                    self.show_root(Board::stage_folder(&path));
                 }
                 if ui.button("Auto-pin files in a grid").clicked() {
                     let result = Board::stage_folder(&path).and_then(|mut board| {
@@ -416,7 +419,7 @@ impl eframe::App for BoardWindow {
                         board.pin_files(&files)?;
                         Ok(board)
                     });
-                    self.show_board(result);
+                    self.show_root(result);
                 }
             } else {
                 ui.label("Board folder");
