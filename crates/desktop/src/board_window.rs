@@ -23,6 +23,7 @@ struct Canvas {
     board: Board,
     enter: Option<usize>,
     edit_title: Option<(usize, String)>,
+    confirm_empty: bool,
     display_only: bool,
     link_drops: bool,
     images: images::Images,
@@ -82,6 +83,7 @@ impl BoardWindow {
                     board,
                     enter: None,
                     edit_title: None,
+                    confirm_empty: false,
                     display_only: false,
                     link_drops: false,
                     images: Default::default(),
@@ -138,6 +140,10 @@ impl eframe::App for BoardWindow {
                     let trash = canvas.board.trashed_files();
                     if !trash.is_empty() {
                         ui.menu_button("Recycle bin", |ui| {
+                            if ui.button("Empty bin…").clicked() {
+                                canvas.confirm_empty = true;
+                                ui.close();
+                            }
                             for name in trash {
                                 if ui.button(format!("Restore {name}")).clicked() {
                                     if let Err(e) = canvas.board.restore(&name) {
@@ -474,6 +480,22 @@ impl Canvas {
             self.cut_menu = None;
             ui.ctx().request_repaint();
             return Ok(());
+        }
+        if self.confirm_empty {
+            let mut empty = false;
+            egui::Window::new("Permanently empty this board’s recycle bin?")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_empty = false;
+                    }
+                    empty = ui.button("Delete recycled files").clicked();
+                });
+            if empty {
+                self.confirm_empty = false;
+                self.board.empty_trash()?;
+            }
         }
         if let Some((idx, text)) = &mut self.edit_title {
             let mut done = false;

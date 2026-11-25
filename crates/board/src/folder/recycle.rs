@@ -230,6 +230,35 @@ impl Board {
         fs::remove_file(source)
     }
 
+    pub fn empty_trash(&mut self) -> io::Result<()> {
+        self.check_manifest()?;
+        let folder = self.trash_folder()?;
+        let names = self.trashed_files();
+        for name in &names {
+            if !valid_name(name) {
+                return Err(invalid("invalid file in trash"));
+            }
+            match folder.join(name).symlink_metadata() {
+                Ok(m) if m.is_file() => (),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                _ => return Err(invalid("unexpected entry in trash")),
+            }
+        }
+        // Process only recorded payloads. Retrying after an interruption is safe.
+        for name in names {
+            match fs::remove_file(folder.join(name)) {
+                Ok(()) => (),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e),
+            }
+        }
+        let mut next = self.manifest.clone();
+        next.remove("trash");
+        save(&self.root, &next)?;
+        self.manifest = next;
+        Ok(())
+    }
+
     pub fn restore(&mut self, name: &str) -> io::Result<()> {
         self.check_manifest()?;
         if !valid_name(name) || self.cards.len() >= MAX_CARDS {
@@ -261,24 +290,40 @@ impl Board {
             .ok_or_else(|| invalid("invalid trash record"))?;
         let pos = [position(entry.get("x"))?, position(entry.get("y"))?];
         entries(&mut next, "cards")?.push(entry.clone());
-        let links = entries(&mut next, "strings")?;
         for pair in record
             .get("strings")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("invalid trash links"))?
         {
-            if references(pair, name)
-                && pair.as_array().is_some_and(|p| {
-                    p.len() == 2
-                        && p.iter().all(|v| {
-                            v.as_str().is_some_and(|f| {
-                                f == name || self.cards.iter().any(|c| c.file == f)
-                            })
-                        })
-                })
-                && !links.contains(pair)
-            {
-                links.push(pair.clone());
+            let Some(ends) = pair
+                .as_array()
+                .filter(|p| p.len() == 2 && references(pair, name))
+            else {
+                return Err(invalid("invalid trash link"));
+            };
+            let other = ends
+                .iter()
+                .filter_map(Value::as_str)
+                .find(|f| *f != name)
+                .ok_or_else(|| invalid("invalid trash endpoint"))?;
+            if self.cards.iter().any(|c| c.file == other) {
+                let links = entries(&mut next, "strings")?;
+                if !links.contains(pair) {
+                    links.push(pair.clone());
+                }
+            } else if let Some(other_record) = entries(&mut next, "trash")?.iter_mut().find(|v| {
+                v.get("card")
+                    .and_then(|c| c.get("file"))
+                    .and_then(Value::as_str)
+                    == Some(other)
+            }) {
+                let links = other_record
+                    .get_mut("strings")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| invalid("invalid trash links"))?;
+                if !links.contains(pair) {
+                    links.push(pair.clone());
+                }
             }
         }
         let trash_folder = self.trash_folder()?;

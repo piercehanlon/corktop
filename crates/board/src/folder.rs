@@ -663,6 +663,28 @@ mod tests {
     use std::process::Command;
 
     #[test]
+    fn restore_link_when_both_endpoints_were_recycled_and_only_purge_tracked_files() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("one", [1, 2]).unwrap();
+        board.create("two", [3, 4]).unwrap();
+        board.connect(0, 1).unwrap();
+        board.remove_card(0).unwrap();
+        board.remove_card(0).unwrap();
+        let names = board.trashed_files();
+        board.restore(&names[0]).unwrap();
+        board.restore(&names[1]).unwrap();
+        assert_eq!(board.strings(), [[0, 1]]);
+        board.remove_card(0).unwrap();
+        let unrelated = root.path().join(".trash/untracked");
+        fs::write(&unrelated, "leave this").unwrap();
+        board.empty_trash().unwrap();
+        assert!(board.trashed_files().is_empty());
+        assert!(unrelated.is_file());
+        assert!(!root.path().join(".trash").join(&names[0]).exists());
+    }
+
+    #[test]
     fn folder_transfer_preserves_payload_and_title_and_only_unlinks_local_strands() {
         let root = tempfile::tempdir().unwrap();
         let mut board = Board::open(root.path()).unwrap();
