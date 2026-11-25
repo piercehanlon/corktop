@@ -23,9 +23,16 @@ pub struct Card {
 
 pub struct Board {
     root: PathBuf,
-    _lock: File,
+    lock: File,
     manifest: Table,
     cards: Vec<Card>,
+}
+
+impl Drop for Board {
+    fn drop(&mut self) {
+        // A concurrently spawned process may briefly share the file description before exec.
+        let _ = self.lock.unlock();
+    }
 }
 
 fn valid_name(name: &str) -> bool {
@@ -143,7 +150,7 @@ impl Board {
         }
         Ok(Self {
             root,
-            _lock: lock,
+            lock,
             manifest,
             cards,
         })
