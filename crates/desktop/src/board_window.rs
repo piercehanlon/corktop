@@ -4,6 +4,7 @@ use std::{path::Path, time::Duration};
 
 mod fonts;
 mod images;
+mod list;
 mod material;
 mod opener;
 mod placard;
@@ -40,6 +41,7 @@ struct Canvas {
     display_only: bool,
     link_drops: bool,
     images: images::Images,
+    reveal: Option<(String, std::time::Instant, bool)>,
     pasted_text: bool,
     typed_v: bool,
     next_refresh: std::time::Instant,
@@ -69,6 +71,7 @@ pub struct BoardWindow {
     #[cfg(windows)]
     tray: Option<crate::shell::tray::Handle>,
     showing_settings: bool,
+    flat_list: Option<list::FlatList>,
     picker_open: bool,
     hidden: bool,
     pub machine: crate::shell::MachineState,
@@ -216,6 +219,42 @@ impl BoardWindow {
         }
     }
 
+    fn reveal_card(&mut self, board: &Path, file: String) -> std::io::Result<()> {
+        let Some(current) = &self.canvas else {
+            return Ok(());
+        };
+        let root = current.board.root();
+        let rel = board.strip_prefix(root).map_err(std::io::Error::other)?;
+        let mut path = root.to_owned();
+        let mut chain = Vec::new();
+        for part in rel.components() {
+            let std::path::Component::Normal(name) = part else {
+                return Err(std::io::Error::other("invalid child folder"));
+            };
+            path.push(name);
+            if !path.symlink_metadata()?.is_dir() {
+                return Err(std::io::Error::other("folder moved"));
+            }
+            if path.join(".board.toml").try_exists()? {
+                chain.push(Board::open(&path)?);
+            }
+        }
+        let target = chain.last().unwrap_or(&current.board);
+        if target.root() != board || !target.cards().iter().any(|c| c.file == file) {
+            return Err(std::io::Error::other("card moved since search"));
+        }
+        for board in chain {
+            self.parents.push(self.canvas.take().unwrap());
+            self.show_board(Ok(board));
+        }
+        self.canvas.as_mut().unwrap().reveal = Some((
+            file,
+            std::time::Instant::now() + Duration::from_millis(1100),
+            true,
+        ));
+        Ok(())
+    }
+
     pub fn open(&mut self, path: &Path) {
         match Board::open(path) {
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
@@ -259,6 +298,7 @@ impl BoardWindow {
                     display_only: false,
                     link_drops: false,
                     images: Default::default(),
+                    reveal: None,
                     pasted_text: false,
                     typed_v: false,
                     next_refresh: std::time::Instant::now(),
@@ -271,6 +311,7 @@ impl BoardWindow {
                     paste_at: None,
                 });
                 self.occupied = None;
+                self.flat_list = None;
                 self.error.clear();
             }
             Err(e) => self.error = format!("Could not open folder: {e}"),
@@ -345,6 +386,9 @@ impl BoardWindow {
                 }
                 if let Some(canvas) = self.canvas.as_mut() {
                     ui.separator();
+                    if ui.button("Flat list").clicked() {
+                        self.flat_list = Some(list::FlatList::open(&canvas.board));
+                    }
                     if let Some(prefs) = self.preferences.as_mut() {
                         if ui.button("Settings").clicked() {
                             self.showing_settings = true;
@@ -410,6 +454,18 @@ impl BoardWindow {
                 ui.colored_label(ui.visuals().error_fg_color, &self.error);
             }
         });
+        if let Some(list) = &mut self.flat_list {
+            let mut open = true;
+            let selected = list.show(ctx, &self.materials.style, &mut open);
+            if let Some((board, file)) = selected {
+                self.flat_list = None;
+                if let Err(e) = self.reveal_card(&board, file) {
+                    self.error = e.to_string();
+                }
+            } else if !open {
+                self.flat_list = None;
+            }
+        }
         if self.showing_settings {
             let mut show = true;
             egui::Window::new("Settings")
@@ -746,6 +802,22 @@ impl Canvas {
                 } else {
                     self.pending_copy = Some((idx, now + delay));
                 }
+            }
+            if let Some((file, until, scroll)) = &mut self.reveal
+                && *file == card.file
+                && let Some(left) = until.checked_duration_since(std::time::Instant::now())
+            {
+                if std::mem::take(scroll) {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                }
+                let pulse = (left.as_secs_f32() * 10.).sin() * 0.5 + 0.5;
+                ui.painter().rect_stroke(
+                    rect.expand(3. + pulse * 3.),
+                    6.,
+                    egui::Stroke::new(2. + pulse * 2., Color32::WHITE),
+                    egui::StrokeKind::Outside,
+                );
+                ui.ctx().request_repaint();
             }
             rects.push(rect);
             if !ui.is_rect_visible(rect) {
