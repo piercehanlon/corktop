@@ -25,6 +25,8 @@ pub struct Card {
     pub file: String,
     pub text: String,
     pub title: Option<String>,
+    pub tone: Option<u8>,
+    pub show_pin: bool,
     pub missing: bool,
     pub folder: bool,
     revision: Option<(SystemTime, u64)>,
@@ -129,6 +131,8 @@ impl Card {
             position,
             text: String::new(),
             title: None,
+            tone: None,
+            show_pin: true,
             missing: true,
             folder: false,
             revision: None,
@@ -187,6 +191,24 @@ impl Card {
     }
 }
 
+fn card_style(entry: &Value) -> io::Result<(Option<u8>, bool)> {
+    let tone = entry
+        .get("tone")
+        .map(|v| {
+            v.as_integer()
+                .filter(|n| (0..4).contains(n))
+                .map(|n| n as u8)
+                .ok_or_else(|| invalid("invalid card tone"))
+        })
+        .transpose()?;
+    let show_pin = entry
+        .get("show_pin")
+        .map(|v| v.as_bool().ok_or_else(|| invalid("invalid pin setting")))
+        .transpose()?
+        .unwrap_or(true);
+    Ok((tone, show_pin))
+}
+
 fn load_cards(root: &Path, manifest: &Table) -> io::Result<Vec<Card>> {
     if manifest.get("schema_version").and_then(Value::as_integer)
         != Some(i64::from(MANIFEST_VERSION))
@@ -213,6 +235,7 @@ fn load_cards(root: &Path, manifest: &Table) -> io::Result<Vec<Card>> {
                 file,
                 [position(entry.get("x"))?, position(entry.get("y"))?],
             )?;
+            (card.tone, card.show_pin) = card_style(entry)?;
             card.title = entry
                 .get("title")
                 .and_then(Value::as_str)
@@ -661,6 +684,32 @@ impl Board {
         Err(invalid("no available card filename"))
     }
 
+    pub fn configure_card(
+        &mut self,
+        index: usize,
+        tone: Option<u8>,
+        show_pin: bool,
+        pos: [i32; 2],
+    ) -> io::Result<()> {
+        valid_position(pos)?;
+        if index >= self.cards.len() || tone.is_some_and(|n| n >= 4) {
+            return Err(invalid("invalid card options"));
+        }
+        let mut next = self.manifest.clone();
+        let card = next["cards"].as_array_mut().unwrap()[index]
+            .as_table_mut()
+            .unwrap();
+        if let Some(n) = tone {
+            card.insert("tone".into(), i64::from(n).into());
+        } else {
+            card.remove("tone");
+        }
+        card.insert("show_pin".into(), show_pin.into());
+        card.insert("x".into(), pos[0].into());
+        card.insert("y".into(), pos[1].into());
+        self.commit_layout(next)
+    }
+
     pub fn move_card(&mut self, index: usize, pos: [i32; 2]) -> io::Result<()> {
         valid_position(pos)?;
         let card = self
@@ -876,6 +925,24 @@ mod tests {
         assert_eq!(board.cards()[0].position, [86, 105]);
         assert_eq!(board.cards()[0].text, text);
         assert_eq!(board.cards()[1].position, [0, 0]);
+    }
+
+    #[test]
+    fn card_options_persist_and_undo_to_pilot_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let mut board = Board::open(root.path()).unwrap();
+        board.create("Paper", [10, 10]).unwrap();
+        board.configure_card(0, Some(3), false, [30, 20]).unwrap();
+        assert!(board.undo_layout().unwrap());
+        assert!(board.cards()[0].show_pin);
+        assert_eq!(board.cards()[0].tone, None);
+        assert_eq!(board.cards()[0].position, [10, 10]);
+        board.configure_card(0, Some(2), false, [40, 50]).unwrap();
+        drop(board);
+        let board = Board::open(root.path()).unwrap();
+        assert_eq!(board.list_entries()[0].tone, Some(2));
+        assert!(!board.cards()[0].show_pin);
+        assert_eq!(board.cards()[0].position, [40, 50]);
     }
 
     #[test]

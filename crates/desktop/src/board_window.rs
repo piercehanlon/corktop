@@ -34,11 +34,19 @@ struct TackDrag {
     color: usize,
 }
 
+struct CardOptions {
+    file: String,
+    tone: Option<u8>,
+    show_pin: bool,
+    position: [i32; 2],
+}
+
 struct Canvas {
     board: Board,
     spatial: spatial::Spatial,
     enter: Option<usize>,
     edit_title: Option<(usize, String)>,
+    options: Option<CardOptions>,
     confirm_empty: bool,
     display_only: bool,
     link_drops: bool,
@@ -312,6 +320,7 @@ impl BoardWindow {
                     spatial: Default::default(),
                     enter: None,
                     edit_title: None,
+                    options: None,
                     confirm_empty: false,
                     display_only: false,
                     link_drops: false,
@@ -752,7 +761,27 @@ impl Canvas {
                 .map_or(card.position, |(_, pos)| pos);
             let rect = Rect::from_min_size(origin + offset(position) * scale, CARD_SIZE * scale);
             let response = ui.interact(rect, ui.id().with(("card", idx)), Sense::click_and_drag());
-            if self.draft.is_none() && (response.dragged() || response.drag_stopped()) {
+            let mut edit = response.secondary_clicked();
+            if self.options.is_none()
+                && response.is_pointer_button_down_on()
+                && let Some(elapsed) = ui.input(|i| {
+                    let p = &i.pointer;
+                    (p.primary_down() && p.press_origin()?.distance(p.interact_pos()?) < 4.)
+                        .then_some(i.time - p.press_start_time()?)
+                })
+            {
+                if elapsed >= 0.52 {
+                    edit = true;
+                } else {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f64(0.52 - elapsed));
+                }
+            }
+            if self.options.is_none()
+                && !edit
+                && self.draft.is_none()
+                && (response.dragged() || response.drag_stopped())
+            {
                 self.pending_copy = None;
                 let delta = ui.input(|i| {
                     i.pointer
@@ -768,7 +797,7 @@ impl Canvas {
                 }
                 ui.ctx().request_repaint();
             }
-            if self.draft.is_none() && response.clicked() {
+            if self.options.is_none() && !edit && self.draft.is_none() && response.clicked() {
                 if response.double_clicked() && self.pending_copy.is_some_and(|(id, _)| id == idx) {
                     self.pending_copy = None;
                     if card.folder {
@@ -808,7 +837,7 @@ impl Canvas {
             let paper = if card.missing {
                 Color32::from_gray(165)
             } else {
-                style.note(&card.file, card.folder)
+                style.card_paper(&card.file, card.folder, card.tone)
             };
             let ink = if paper.intensity() < 0.45 {
                 Color32::WHITE
@@ -836,20 +865,25 @@ impl Canvas {
                 painter.rect_filled(rect, 4., paper);
             }
             if rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO)) {
-                let edit =
+                let edit_rect =
                     Rect::from_min_size(rect.right_bottom() - vec2(44.0, 23.0), vec2(42.0, 21.0));
                 if ui
-                    .put(edit, egui::Button::new("Edit").frame(false))
-                    .on_hover_text("Edit card title")
+                    .put(edit_rect, egui::Button::new("Edit").frame(false))
+                    .on_hover_text("Card options")
                     .clicked()
                 {
-                    self.edit_title = Some((
-                        idx,
-                        card.title.clone().unwrap_or_else(|| {
-                            card.text.lines().next().unwrap_or(&card.file).to_owned()
-                        }),
-                    ));
+                    edit = true;
                 }
+            }
+            if edit {
+                self.pending_copy = None;
+                self.moving = None;
+                self.options = Some(CardOptions {
+                    file: card.file.clone(),
+                    tone: card.tone,
+                    show_pin: card.show_pin,
+                    position: card.position,
+                });
             }
             if !card.folder
                 && rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO))
@@ -868,15 +902,16 @@ impl Canvas {
                     remove = Some(idx);
                 }
             }
-            let pin = ui
-                .interact(
+            let pin = card.show_pin.then(|| {
+                ui.interact(
                     Rect::from_center_size(tack(rect), vec2(22.0, 22.0)),
                     ui.id().with(("tack", idx)),
                     Sense::drag(),
                 )
-                .on_hover_text("Hold, then drag to another card");
+                .on_hover_text("Hold, then drag to another card")
+            });
             if self.draft.is_none()
-                && pin.is_pointer_button_down_on()
+                && pin.is_some_and(|p| p.is_pointer_button_down_on())
                 && ui.input(|i| i.pointer.primary_pressed())
             {
                 self.pending_copy = None;
@@ -949,6 +984,7 @@ impl Canvas {
                 self.board.empty_trash()?;
             }
         }
+        self.card_options(ui, style)?;
         if let Some((idx, text)) = &mut self.edit_title {
             let mut done = false;
             let mut commit = false;
@@ -1053,6 +1089,89 @@ impl Canvas {
         }
         Ok(())
     }
+    fn card_options(&mut self, ui: &egui::Ui, style: &material::Style) -> std::io::Result<()> {
+        let Some(options) = &mut self.options else {
+            return Ok(());
+        };
+        let Some(idx) = self
+            .board
+            .cards()
+            .iter()
+            .position(|c| c.file == options.file)
+        else {
+            self.options = None;
+            return Ok(());
+        };
+        let card = &self.board.cards()[idx];
+        let max = logical((offset(self.board.canvas_size()) - CARD_SIZE).max(Vec2::ZERO));
+        let mut close = false;
+        let mut apply = false;
+        egui::Window::new("Card options")
+            .collapsible(false)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(&card.file);
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut options.tone, None, "Default");
+                    for tone in 0..4 {
+                        let color = style.card_paper(&card.file, card.folder, Some(tone));
+                        if ui
+                            .add(
+                                egui::Button::new("   ")
+                                    .fill(color)
+                                    .selected(options.tone == Some(tone)),
+                            )
+                            .on_hover_text(format!("Paper color {}", tone + 1))
+                            .clicked()
+                        {
+                            options.tone = Some(tone);
+                        }
+                    }
+                });
+                ui.checkbox(&mut options.show_pin, "Show tack");
+                ui.horizontal(|ui| {
+                    for (axis, label) in ["X ", "Y "].into_iter().enumerate() {
+                        ui.add(
+                            egui::DragValue::new(&mut options.position[axis])
+                                .prefix(label)
+                                .range(0..=max[axis]),
+                        );
+                    }
+                });
+                if ui.button("Edit card title").clicked() {
+                    self.edit_title = Some((
+                        idx,
+                        card.title.clone().unwrap_or_else(|| {
+                            card.text.lines().next().unwrap_or(&card.file).into()
+                        }),
+                    ));
+                    close = true;
+                }
+                if ui.button("Open file location").clicked() {
+                    if let Err(err) = opener::launch(
+                        self.board.root().to_owned(),
+                        self.open_error_tx.clone(),
+                        ui.ctx().clone(),
+                    ) {
+                        let _ = self.open_error_tx.send(err);
+                    }
+                    close = true;
+                }
+                ui.horizontal(|ui| {
+                    apply = ui.button("Apply").clicked();
+                    close |= ui.button("Cancel").clicked();
+                });
+            });
+        if apply {
+            self.board
+                .configure_card(idx, options.tone, options.show_pin, options.position)?;
+        }
+        if close || apply {
+            self.options = None;
+        }
+        Ok(())
+    }
+
     fn finish_copy(&mut self, ui: &egui::Ui, cards: &[Rect], now: f64) -> std::io::Result<()> {
         if let Some((_, deadline)) = self.pending_copy
             && deadline > now
@@ -1277,8 +1396,8 @@ impl Canvas {
                 ui.ctx().request_repaint();
             }
         }
-        for rect in cards {
-            if ui.is_rect_visible(*rect) {
+        for (rect, card) in cards.iter().zip(self.board.cards()) {
+            if card.show_pin && ui.is_rect_visible(*rect) {
                 style.pin(ui.painter(), tack(*rect));
             }
         }

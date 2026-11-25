@@ -147,8 +147,11 @@ impl FlatList {
                             );
                         }
                         let icon = Rect::from_min_size(rect.min + vec2(4., 7.), vec2(42., 40.));
-                        ui.painter()
-                            .rect_filled(icon, 2., style.note(&r.file, r.folder));
+                        ui.painter().rect_filled(
+                            icon,
+                            2.,
+                            style.card_paper(&r.file, r.folder, r.tone),
+                        );
                         if images::supported(&r.file) {
                             let path = r.board.join(&r.file);
                             let texture = self

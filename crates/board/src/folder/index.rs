@@ -8,6 +8,7 @@ pub struct ListEntry {
     pub kind: String,
     pub zone: String,
     pub folder: bool,
+    pub tone: Option<u8>,
 }
 
 fn list(root: &Path, cards: &[Card], geometry: &Geometry) -> Vec<ListEntry> {
@@ -56,6 +57,7 @@ fn list(root: &Path, cards: &[Card], geometry: &Geometry) -> Vec<ListEntry> {
                 kind,
                 zone,
                 folder: card.folder,
+                tone: card.tone,
             }
         })
         .collect()

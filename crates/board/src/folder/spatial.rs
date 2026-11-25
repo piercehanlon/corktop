@@ -182,10 +182,15 @@ impl Board {
             if entry.get("file").and_then(Value::as_str) != Some(card.file.as_str()) {
                 return Err(invalid("card set changed"));
             }
-            positions.push([position(entry.get("x"))?, position(entry.get("y"))?]);
+            positions.push((
+                [position(entry.get("x"))?, position(entry.get("y"))?],
+                card_style(entry)?,
+            ));
         }
         save(&self.root, next)?;
-        for (card, pos) in self.cards.iter_mut().zip(positions) {
+        for (card, (pos, (tone, show_pin))) in self.cards.iter_mut().zip(positions) {
+            card.tone = tone;
+            card.show_pin = show_pin;
             card.position = pos;
         }
         self.geometry = geometry;
