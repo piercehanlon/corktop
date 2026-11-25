@@ -27,6 +27,24 @@ pub struct MachineState {
     pub introduction_seen: bool,
 }
 
+pub fn app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/corktop.png"))
+        .expect("embedded corktop icon")
+}
+
+pub fn display_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    #[cfg(windows)]
+    if let Some(std::path::Component::Prefix(p)) = path.components().next() {
+        match p.kind() {
+            std::path::Prefix::VerbatimDisk(_) => return text[4..].to_owned(),
+            std::path::Prefix::VerbatimUNC(_, _) => return format!(r"\\{}", &text[8..]),
+            _ => {}
+        }
+    }
+    text.into_owned()
+}
+
 pub fn state_directory() -> io::Result<PathBuf> {
     #[cfg(windows)]
     let dir = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
@@ -69,6 +87,7 @@ impl MachineState {
             .unwrap_or([780., 540.]);
         let mut builder = egui::ViewportBuilder::default()
             .with_app_id("corktop")
+            .with_icon(app_icon())
             .with_decorations(false)
             .with_resizable(true)
             .with_inner_size([w.clamp(160., 16384.), h.clamp(100., 16384.)]);

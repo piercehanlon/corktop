@@ -602,6 +602,96 @@ impl BoardWindow {
     }
 }
 
+// Count content crossing each viewport edge and reveal the nearest target on demand.
+fn offscreen_controls(ui: &mut egui::Ui, view: Rect, items: impl Iterator<Item = Rect>) -> bool {
+    if view.width() < 80. || view.height() < 64. {
+        return false;
+    }
+    let mut edges = [(0usize, Rect::NOTHING, f32::INFINITY); 4];
+    for item in items {
+        let distance = item.center().distance_sq(view.center());
+        for (index, overflow) in [
+            view.left() - item.left(),
+            item.right() - view.right(),
+            view.top() - item.top(),
+            item.bottom() - view.bottom(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if overflow > 2. {
+                let edge = &mut edges[index];
+                edge.0 += 1;
+                if distance < edge.2 {
+                    edge.1 = item;
+                    edge.2 = distance;
+                }
+            }
+        }
+    }
+    if edges.iter().all(|e| e.0 == 0) {
+        return false;
+    }
+    let wide = view.width() >= 260.;
+    let width = if wide { 102. } else { 46. };
+    for ((count, target, _), (direction, center)) in edges.into_iter().zip([
+        (-Vec2::X, view.left_center() + vec2(width * 0.5 + 6., 0.)),
+        (Vec2::X, view.right_center() - vec2(width * 0.5 + 6., 0.)),
+        (-Vec2::Y, view.center_top() + vec2(0., 16.)),
+        (Vec2::Y, view.center_bottom() - vec2(0., 16.)),
+    ]) {
+        if count == 0 {
+            continue;
+        }
+        let rect = Rect::from_center_size(center, vec2(width, 23.));
+        let hit = ui.interact(
+            rect,
+            ui.id()
+                .with(("offscreen", direction.x as i8, direction.y as i8)),
+            Sense::click(),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(
+            rect,
+            6.,
+            if hit.hovered() {
+                Color32::from_rgb(126, 56, 44)
+            } else {
+                Color32::from_rgb(91, 54, 42)
+            },
+        );
+        let arrow = rect.left_center() + vec2(12., 0.);
+        let head = arrow + direction * 4.;
+        let stroke = egui::Stroke::new(1.6, Color32::WHITE);
+        painter.line_segment([arrow - direction * 4., head], stroke);
+        for side in [-1., 1.] {
+            painter.line_segment([head, arrow + direction.rot90() * 3.5 * side], stroke);
+        }
+        painter.text(
+            rect.left_center() + vec2(22., 0.),
+            egui::Align2::LEFT_CENTER,
+            if wide {
+                format!("{count} off-screen")
+            } else {
+                count.to_string()
+            },
+            egui::FontId::proportional(12.),
+            Color32::WHITE,
+        );
+        if hit
+            .on_hover_text("Show nearest off-screen item")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            ui.scroll_to_rect(target, Some(egui::Align::Center));
+        }
+    }
+    let refit = Rect::from_min_size(view.left_bottom() + vec2(10., -30.), vec2(53., 23.));
+    ui.put(refit, egui::Button::new("Refit"))
+        .on_hover_text("Fit the board to this window · Ctrl+Z to undo")
+        .clicked()
+}
+
 fn logical(p: Vec2) -> [i32; 2] {
     [
         p.x.round().clamp(0.0, 1_000_000.0) as i32,
@@ -685,35 +775,6 @@ impl Canvas {
         materials.paint(ui, ui.clip_rect(), origin, scale);
         let style = &materials.style;
         let clip = ui.clip_rect().intersect(canvas);
-        for (a, b, visible) in [
-            (
-                clip.left_top(),
-                clip.left_bottom(),
-                canvas.left() < clip.left() - 1.0,
-            ),
-            (
-                clip.right_top(),
-                clip.right_bottom(),
-                canvas.right() > clip.right() + 1.0,
-            ),
-            (
-                clip.left_top(),
-                clip.right_top(),
-                canvas.top() < clip.top() - 1.0,
-            ),
-            (
-                clip.left_bottom(),
-                clip.right_bottom(),
-                canvas.bottom() > clip.bottom() + 1.0,
-            ),
-        ] {
-            if visible {
-                ui.painter().line_segment(
-                    [a, b],
-                    egui::Stroke::new(5.0, Color32::from_black_alpha(60)),
-                );
-            }
-        }
         let files = ui.input(|i| i.raw.dropped_files.clone());
         let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
         let (cursor, mods) = ui.input(|i| (i.pointer.hover_pos(), i.modifiers));
@@ -1172,6 +1233,17 @@ impl Canvas {
         self.show_strings(ui, &rects, origin, scale, style, extent)?;
         self.spatial
             .show(&mut self.board, ui, origin, scale, &background, style)?;
+        if self.spatial.relocate.is_none() {
+            let pins = self
+                .board
+                .geometry()
+                .pins
+                .iter()
+                .map(|p| Rect::from_center_size(origin + offset(*p) * scale, vec2(12., 12.)));
+            if offscreen_controls(ui, clip, rects.iter().copied().chain(pins)) {
+                self.board.refit(logical(viewport / scale))?;
+            }
+        }
         if self.board.cards().len() != rects.len() {
             self.copied = None;
             self.pending_copy = None;
@@ -1228,7 +1300,7 @@ impl Canvas {
                 )?;
             }
             if refit {
-                self.board.refit(logical(viewport))?;
+                self.board.refit(logical(viewport / scale))?;
             }
         }
         if self.draft.is_none()

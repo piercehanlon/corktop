@@ -48,7 +48,7 @@ impl BoardWindow {
     fn settings_board(&mut self, ui: &mut egui::Ui) {
         ui.strong("Board folder");
         if let Some(canvas) = &self.canvas {
-            ui.label(canvas.board.root().display().to_string());
+            ui.label(crate::shell::display_path(canvas.board.root()));
         }
         ui.horizontal_wrapped(|ui| {
             if ui.button("Switch folder…").clicked() {

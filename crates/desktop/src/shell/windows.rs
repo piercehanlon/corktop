@@ -4,7 +4,8 @@ use std::{
 };
 use windows_sys::{
     Win32::{
-        Foundation::{GetLastError, HWND, RECT, SetLastError},
+        Foundation::{GetLastError, HWND, POINT, RECT, SetLastError},
+        Graphics::Gdi::ScreenToClient,
         UI::WindowsAndMessaging::*,
     },
     core::w,
@@ -12,22 +13,82 @@ use windows_sys::{
 
 pub(super) struct Placement {
     style: isize,
+    extended: isize,
     rect: RECT,
-    parent: isize,
+    parent: HWND,
 }
 
-unsafe extern "system" fn find_worker(window: HWND, output: isize) -> i32 {
-    // Explorer places the wallpaper WorkerW immediately below the desktop icon host.
+unsafe extern "system" fn find_icon_host(window: HWND, output: isize) -> i32 {
     unsafe {
+        let mut class = [0u16; 32];
+        let len = GetClassNameW(window, class.as_mut_ptr(), class.len() as i32);
+        if !class[..len.max(0) as usize]
+            .iter()
+            .copied()
+            .eq("WorkerW".encode_utf16())
+        {
+            return 1;
+        }
         if !FindWindowExW(window, null_mut(), w!("SHELLDLL_DefView"), null()).is_null() {
-            let worker = FindWindowExW(null_mut(), window, w!("WorkerW"), null());
-            if !worker.is_null() {
-                *(output as *mut HWND) = worker;
-                return 0;
-            }
+            *(output as *mut HWND) = window;
+            return 0;
         }
     }
     1
+}
+
+fn reparent(window: HWND, parent: HWND) -> io::Result<()> {
+    unsafe {
+        SetLastError(0);
+        if SetParent(window, parent).is_null() && GetLastError() != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn style(window: HWND, index: i32, value: isize) -> io::Result<()> {
+    unsafe {
+        SetLastError(0);
+        if SetWindowLongPtrW(window, index, value) == 0 && GetLastError() != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn position(window: HWND, rect: RECT, origin: POINT) -> io::Result<()> {
+    unsafe {
+        if SetWindowPos(
+            window,
+            HWND_TOP,
+            origin.x,
+            origin.y,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+impl Placement {
+    fn restore(&self, window: HWND) -> io::Result<()> {
+        reparent(window, self.parent)?;
+        style(window, GWL_STYLE, self.style)?;
+        style(window, GWL_EXSTYLE, self.extended)?;
+        position(
+            window,
+            self.rect,
+            POINT {
+                x: self.rect.left,
+                y: self.rect.top,
+            },
+        )
+    }
 }
 
 pub(super) fn set(
@@ -36,60 +97,69 @@ pub(super) fn set(
     original: &mut Option<Placement>,
 ) -> io::Result<()> {
     let window = handle as HWND;
-    // All changes to style and parent target this process's own live window.
-    unsafe {
-        if desktop {
-            let shell = FindWindowW(w!("Progman"), null());
-            if shell.is_null() {
-                return Err(io::Error::other("Windows desktop host unavailable"));
-            }
-            SendMessageTimeoutW(shell, 0x052c, 0, 0, SMTO_ABORTIFHUNG, 300, null_mut());
-            let mut worker: HWND = null_mut();
-            EnumWindows(Some(find_worker), (&mut worker as *mut HWND) as isize);
-            if worker.is_null() {
-                return Err(io::Error::other(
-                    "Wallpaper layer unavailable. Standard window is active.",
-                ));
-            }
-            let mut rect = RECT::default();
-            if GetWindowRect(window, &mut rect) == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let style = GetWindowLongPtrW(window, GWL_STYLE);
-            let parent = GetParent(window);
-            SetWindowLongPtrW(
-                window,
-                GWL_STYLE,
-                (style & !(WS_POPUP as isize)) | WS_CHILD as isize,
-            );
-            SetLastError(0);
-            if SetParent(window, worker).is_null() && GetLastError() != 0 {
-                let err = io::Error::last_os_error();
-                SetWindowLongPtrW(window, GWL_STYLE, style);
-                return Err(err);
-            }
-            *original = Some(Placement {
-                style,
-                rect,
-                parent: parent as isize,
-            });
-        } else if let Some(p) = original.as_ref() {
-            SetLastError(0);
-            if SetParent(window, p.parent as HWND).is_null() && GetLastError() != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            SetWindowLongPtrW(window, GWL_STYLE, p.style);
-            SetWindowPos(
-                window,
-                HWND_TOP,
-                p.rect.left,
-                p.rect.top,
-                p.rect.right - p.rect.left,
-                p.rect.bottom - p.rect.top,
-                SWP_FRAMECHANGED | SWP_SHOWWINDOW,
-            );
+    if !desktop {
+        if let Some(saved) = original.as_ref() {
+            saved.restore(window)?;
             *original = None;
         }
+        return Ok(());
+    }
+    unsafe {
+        let progman = FindWindowW(w!("Progman"), null());
+        if progman.is_null() {
+            return Err(io::Error::other(
+                "Explorer desktop unavailable. Standard window is active.",
+            ));
+        }
+        // Current Explorer keeps DefView directly under Progman. Older shells host
+        // it in a top-level WorkerW. Use the icon host itself, so a board-sized child
+        // can accept input above DefView while ordinary apps remain above the desktop.
+        let mut host = progman;
+        if FindWindowExW(progman, null_mut(), w!("SHELLDLL_DefView"), null()).is_null() {
+            host = null_mut();
+            EnumWindows(Some(find_icon_host), (&mut host as *mut HWND) as isize);
+        }
+        if host.is_null() {
+            return Err(io::Error::other(
+                "Explorer icon host unavailable. Standard window is active.",
+            ));
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(window, &mut rect) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut origin = POINT {
+            x: rect.left,
+            y: rect.top,
+        };
+        if ScreenToClient(host, &mut origin) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let saved = Placement {
+            style: GetWindowLongPtrW(window, GWL_STYLE),
+            extended: GetWindowLongPtrW(window, GWL_EXSTYLE),
+            parent: GetParent(window),
+            rect,
+        };
+        let attach = (|| {
+            style(
+                window,
+                GWL_STYLE,
+                (saved.style & !(WS_POPUP as isize)) | (WS_CHILD | WS_CLIPSIBLINGS) as isize,
+            )?;
+            style(
+                window,
+                GWL_EXSTYLE,
+                (saved.extended & !(WS_EX_APPWINDOW as isize)) | WS_EX_TOOLWINDOW as isize,
+            )?;
+            reparent(window, host)?;
+            position(window, rect, origin)
+        })();
+        if let Err(error) = attach {
+            saved.restore(window)?;
+            return Err(error);
+        }
+        *original = Some(saved);
     }
     Ok(())
 }
