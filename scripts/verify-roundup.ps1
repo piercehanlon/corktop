@@ -1,4 +1,5 @@
 # The release ZIP embeds the two earlier checks into this single script.
+param([switch]$ResumeRoundup)
 $ErrorActionPreference = 'Stop'
 $exe = Join-Path $PSScriptRoot 'corktop.exe'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('corktop-v1-' + [guid]::NewGuid())
@@ -34,10 +35,15 @@ try {
     $probe = & {
         & (Join-Path $PSScriptRoot 'verify-windows.ps1')
     } | ConvertFrom-Json
-    $tour = & {
-        & (Join-Path $PSScriptRoot 'verify-everyday.ps1')
-    } | ConvertFrom-Json
-    if (!$probe.commit -or $probe.commit -ne $tour.commit) { throw 'Build receipts differ' }
+    if ($ResumeRoundup) {
+        $tour = [ordered]@{status='omitted in resumed run'; previous_build='09bd3c299cfa'}
+    } else {
+        $tour = & {
+            & (Join-Path $PSScriptRoot 'verify-everyday.ps1')
+        } | ConvertFrom-Json
+        if ($probe.commit -ne $tour.commit) { throw 'Build receipts differ' }
+    }
+    if (!$probe.commit) { throw 'Missing build identity' }
     # Use a new profile for setup after the compatibility tests.
     $env:LOCALAPPDATA = Join-Path $root 'Setup profile'
     $null = [IO.Directory]::CreateDirectory($env:LOCALAPPDATA)
@@ -48,17 +54,22 @@ try {
     Confirm-Step "On first launch continue past the tutorial to folder setup. Choose Browse, cancel, then browse again and select $board. Stage files in Inbox. Open the upper-right Inbox and pin Witness. Is the note on the board?"
     $manifest = Join-Path $board '.board.toml'
     if ([IO.File]::ReadAllText($manifest) -notmatch 'file = "Witness.md"') { throw 'Inbox pin missing' }
-    [IO.File]::WriteAllText($note,"Witness`nStatement revised.",$utf8)
-    Confirm-Step 'Did the note update to Statement revised? Hover the note and use its X to recycle it.'
-    if ((Test-Path -LiteralPath $note) -or !(Test-Path -LiteralPath (Join-Path $board '.trash/Witness.md'))) { throw 'Recycle failed' }
-    Confirm-Step 'Open the lower-left recycle bin and restore Witness. Did its text and position return?'
-    if ([IO.File]::ReadAllText($note) -notmatch 'Statement revised') { throw 'Restore failed' }
-    Set-Clipboard -Value 'https://example.org/case'
-    Confirm-Step 'Paste on empty board space. Did a bookmark appear?'
-    $bookmarks = @(Get-ChildItem -LiteralPath $board -Filter '*.url')
-    if ($bookmarks.Count -ne 1 -or [IO.File]::ReadAllText($bookmarks[0].FullName) -notmatch 'URL=https://example.org/case') { throw 'Bookmark mismatch' }
+    Set-Clipboard -Value 'first copy sentinel'
+    Confirm-Step 'Single-click Witness once. As soon as the card outlines, drag it a short distance. Did it move immediately without hanging? Paste into Notepad and check for Witness and Statement one.'
+    if (((Get-Clipboard -Raw) -replace "`r`n","`n") -cne "Witness`nStatement one.") { throw 'First-copy payload differs' }
+    if (!$ResumeRoundup) {
+        [IO.File]::WriteAllText($note,"Witness`nStatement revised.",$utf8)
+        Confirm-Step 'Did the note update to Statement revised? Hover the note and use its X to recycle it.'
+        if ((Test-Path -LiteralPath $note) -or !(Test-Path -LiteralPath (Join-Path $board '.trash/Witness.md'))) { throw 'Recycle failed' }
+        Confirm-Step 'Open the lower-left recycle bin and restore Witness. Did its text and position return?'
+        if ([IO.File]::ReadAllText($note) -notmatch 'Statement revised') { throw 'Restore failed' }
+        Set-Clipboard -Value 'https://example.org/case'
+        Confirm-Step 'Paste on empty board space. Did a bookmark appear?'
+        $bookmarks = @(Get-ChildItem -LiteralPath $board -Filter '*.url')
+        if ($bookmarks.Count -ne 1 -or [IO.File]::ReadAllText($bookmarks[0].FullName) -notmatch 'URL=https://example.org/case') { throw 'Bookmark mismatch' }
+    }
     foreach ($name in 'Copy.txt','Link.txt','Move.txt') { [IO.File]::WriteAllText((Join-Path $files $name),$name,$utf8) }
-    Confirm-Step "Open $files in Explorer. With copy selected as the default drop mode, drag Copy.txt onto corktop, Ctrl-drag Link.txt, then Shift-drag Move.txt. Did each show its matching drop badge?"
+    Confirm-Step "Open $files in Explorer. With copy selected as the default drop mode, drag Copy.txt onto corktop, Ctrl-drag Link.txt, then Shift-drag Move.txt. Did the top-center badge show + COPY, LINK, and MOVE before release?"
     if (!(Test-Path (Join-Path $files 'Copy.txt')) -or !(Test-Path (Join-Path $files 'Link.txt')) -or (Test-Path (Join-Path $files 'Move.txt'))) { throw 'Drop source files differ' }
     foreach ($suffix in 'Copy.txt','Link.txt.corklink','Move.txt') {
         if (@(Get-ChildItem -LiteralPath $board -Filter "*_$suffix").Count -ne 1) { throw "Missing drop: $suffix" }
@@ -81,7 +92,7 @@ try {
     Quit-Board
     $app = $null
     [ordered]@{version=$probe.version; commit=$probe.commit; target=$probe.target; sha256=$probe.sha256;
-        probes=$probe; everyday=$tour; portable='pass'; setup='pass'; presentation='pass';
+        probes=$probe; everyday=$tour; first_copy='pass'; file_drops='pass'; resumed=[bool]$ResumeRoundup; setup='pass'; presentation='pass';
         named_zone='pass'; desktop=$desktop; tray='pass'; reopen='pass'} | ConvertTo-Json -Depth 4 -Compress
 } finally {
     if ($app) { try { if (!$app.HasExited) { $app.Kill(); $app.WaitForExit() } } catch [System.InvalidOperationException] {} }

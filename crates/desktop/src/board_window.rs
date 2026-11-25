@@ -2,6 +2,7 @@ use corktop_board::Board;
 use eframe::egui::{self, Color32, Key, Pos2, Rect, Sense, Vec2, vec2};
 use std::{path::Path, time::Duration};
 
+mod file_drop;
 mod fonts;
 mod hud;
 mod images;
@@ -42,6 +43,8 @@ struct CardOptions {
 }
 
 struct Canvas {
+    #[cfg(windows)]
+    window_handle: isize,
     board: Board,
     spatial: spatial::Spatial,
     enter: Option<usize>,
@@ -49,7 +52,8 @@ struct Canvas {
     options: Option<CardOptions>,
     confirm_empty: bool,
     display_only: bool,
-    link_drops: bool,
+    drop_action: file_drop::Action,
+    pending_drop: file_drop::Pending,
     ghost_days: u8,
     images: images::Images,
     reveal: Option<(String, std::time::Instant, bool)>,
@@ -288,8 +292,8 @@ impl BoardWindow {
                 if self.setup.styled {
                     preferences.store("appearance", &self.setup.style)?;
                 }
-                if let Some(link) = self.setup.links {
-                    preferences.set("link_file_drops", link.into())?;
+                if let Some(action) = self.setup.drop_action {
+                    preferences.store("file_drop_action", &action)?;
                 }
                 if preferences.get::<bool>("tutorial_seen")?.is_none() {
                     preferences.set("tutorial_seen", true.into())?;
@@ -315,6 +319,8 @@ impl BoardWindow {
             Ok(board) => {
                 let (open_error_tx, open_error_rx) = std::sync::mpsc::channel();
                 self.canvas = Some(Canvas {
+                    #[cfg(windows)]
+                    window_handle: 0,
                     open_error_tx,
                     open_error_rx,
                     board,
@@ -324,7 +330,8 @@ impl BoardWindow {
                     options: None,
                     confirm_empty: false,
                     display_only: false,
-                    link_drops: false,
+                    drop_action: Default::default(),
+                    pending_drop: Default::default(),
                     ghost_days: 0,
                     images: Default::default(),
                     reveal: None,
@@ -375,6 +382,15 @@ impl eframe::App for BoardWindow {
         {
             self.machine.desktop = self.layer.active;
             self.error = e.to_string();
+        }
+        #[cfg(windows)]
+        if let Some(canvas) = &mut self.canvas {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(h) = frame.window_handle()
+                && let RawWindowHandle::Win32(handle) = h.as_raw()
+            {
+                canvas.window_handle = handle.hwnd.get();
+            }
         }
         self.draw(ctx);
     }
@@ -588,13 +604,18 @@ impl BoardWindow {
                         {
                             self.error = e.to_string();
                         }
+                        let mut action = file_drop::Action::saved(prefs);
+                        if action.setting(ui)
+                            && let Err(e) = prefs.store("file_drop_action", &action)
+                        {
+                            self.error = e.to_string();
+                        }
                         for (key, label) in [
                             (
                                 "display_only_titles",
                                 "Keep the filename when editing a card title",
                             ),
                             ("auto_hide_controls", "Auto-hide board controls"),
-                            ("link_file_drops", "Link dropped files by default"),
                         ] {
                             let mut value = prefs.flag(key, false);
                             if ui.checkbox(&mut value, label).changed()
@@ -783,38 +804,73 @@ impl Canvas {
                 );
             }
         }
-        let mods = ui.input(|i| i.modifiers);
-        if ui.input(|i| !i.raw.hovered_files.is_empty()) {
-            let label = if mods.shift {
-                "Move"
-            } else if mods.ctrl != self.link_drops {
-                "Link"
-            } else {
-                "Copy"
-            };
-            egui::Area::new("drop-feedback".into())
-                .order(egui::Order::Tooltip)
-                .fixed_pos(ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin) + vec2(12.0, 12.0))
-                .show(ui.ctx(), |ui| {
-                    ui.label(label);
-                });
-        }
         let files = ui.input(|i| i.raw.dropped_files.clone());
+        let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
+        let (cursor, mods) = ui.input(|i| (i.pointer.hover_pos(), i.modifiers));
+        #[cfg(windows)]
+        let (cursor, mods) = {
+            let (mut cursor, mut mods) = (cursor, mods);
+            if hovering || !files.is_empty() {
+                // Explorer owns the drag and winit does not forward DragOver positions or keys.
+                use windows_sys::Win32::{
+                    Foundation::POINT,
+                    Graphics::Gdi::ScreenToClient,
+                    UI::{
+                        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_SHIFT},
+                        WindowsAndMessaging::GetCursorPos,
+                    },
+                };
+                let mut pt = POINT::default();
+                unsafe {
+                    if self.window_handle != 0
+                        && GetCursorPos(&mut pt) != 0
+                        && ScreenToClient(self.window_handle as _, &mut pt) != 0
+                    {
+                        cursor = Some(
+                            egui::pos2(pt.x as f32, pt.y as f32) / ui.ctx().pixels_per_point(),
+                        );
+                    }
+                    mods.ctrl = GetAsyncKeyState(VK_CONTROL.into()) < 0;
+                    mods.shift = GetAsyncKeyState(VK_SHIFT.into()) < 0;
+                }
+            }
+            (cursor, mods)
+        };
+        let action = self.drop_action.with_keys(mods);
+        if hovering {
+            let label = action.badge();
+            let screen = ui.ctx().screen_rect();
+            let width = 182.0_f32.min(screen.width());
+            let pos = screen.center_top() + vec2(-width / 2., 44.);
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                "drop-feedback".into(),
+            ));
+            let badge = Rect::from_min_size(pos, vec2(width, 36.));
+            painter.rect_filled(badge, 5., Color32::from_rgb(32, 30, 28));
+            painter.rect_stroke(
+                badge,
+                5.,
+                egui::Stroke::new(2., Color32::WHITE),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                badge.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(19.),
+                Color32::WHITE,
+            );
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        }
         for (n, file) in files.iter().enumerate() {
             if let Some(path) = &file.path {
-                let pos = card_position(
-                    ui.input(|i| i.pointer.hover_pos()).unwrap_or(origin) - origin
-                        + vec2(0.0, n as f32 * 26.0),
-                );
-                self.board.import_file(
-                    path,
-                    pos,
-                    (mods.ctrl != self.link_drops) && !mods.shift,
-                    mods.shift,
-                )?;
-                ui.ctx().request_repaint();
+                let pos =
+                    card_position(cursor.unwrap_or(origin) - origin + vec2(0.0, n as f32 * 26.0));
+                self.pending_drop.add(path.clone(), pos);
             }
         }
+        self.pending_drop.apply(ui, &mut self.board, action)?;
         let now = ui.input(|i| i.time);
         let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
         let mut dropped = None;
@@ -1390,7 +1446,7 @@ impl Canvas {
                 self.board.import_file(
                     &path,
                     free_position(&self.board),
-                    self.link_drops,
+                    self.drop_action == file_drop::Action::Link,
                     false,
                 )?;
             }

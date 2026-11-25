@@ -70,7 +70,7 @@ impl BoardWindow {
                 .ok()
                 .flatten()
                 .unwrap_or(0);
-            canvas.link_drops = p.flag("link_file_drops", false);
+            canvas.drop_action = file_drop::Action::saved(p);
         }
         let auto_hide = self
             .preferences
@@ -191,7 +191,8 @@ impl BoardWindow {
                                 3.,
                                 Color32::from_rgb((146. + 90. * phase) as u8, 98, 44),
                             );
-                            ui.menu_button(format!("Inbox +{count}"), |ui| {
+                            let inbox = ui.button(format!("Inbox +{count}"));
+                            egui::Popup::menu(&inbox).gap(5.).show(|ui| {
                                 let mut pin = None;
                                 egui::ScrollArea::vertical()
                                     .max_height(240.)
