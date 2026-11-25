@@ -10,12 +10,12 @@ corktop turns a folder into a desktop corkboard. Pin notes, screenshots, links, 
 - Make **Magic String Zones** by connecting tacks in a loop. Move the group by its label or arrange the cards in a grid, ring, web, or stack.
 - Use the interactive desktop layer on Windows, X11, and Wayland compositors with layer-shell support.
 - Export a board as a portable folder. Preview what travels and choose whether to include copies of linked files.
-- True Believer Mode is off by default. Every so often, it has a 42-millisecond observation to share.
+- True Believer Mode is off by default. Toggle it on, if you want to open your eyes.
 
 ## See it in action
 
 | Write and save a note | Connect two cards |
-| --- | --- |
+| :---: | :---: |
 | [![Typing a Markdown note on the board and saving it as a card](media/write-a-note.gif)](media/write-a-note.mp4) | [![Dragging yarn from one card’s pinhead to another card](media/connect-cards.gif)](media/connect-cards.mp4) |
 | **Copy and paste a card** | **Drop a file on the Blueprint board** |
 | [![Copying and pasting a note](media/copy-and-paste.gif)](media/copy-and-paste.mp4) | [![Dragging a file from a folder onto the Blueprint board](media/drop-a-file.gif)](media/drop-a-file.mp4) |
