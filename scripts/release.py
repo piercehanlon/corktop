@@ -88,6 +88,7 @@ def windows_zip(dest, sha):
         shutil.copy("scripts/verify-windows.ps1", stage)
         shutil.copy("scripts/verify-text-cards.ps1", stage)
         shutil.copy("scripts/verify-strings.ps1", stage)
+        shutil.copy("scripts/verify-everyday.ps1", stage)
         shutil.copy("scripts/test-strings-windows.md", stage)
         (stage / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
         archive = Path(scratch) / (name + ".zip")

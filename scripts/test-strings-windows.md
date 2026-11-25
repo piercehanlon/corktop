@@ -26,7 +26,7 @@ Open-Board
 ```
 
 1. Double-click two separate blank spots and enter different titles and bodies. Click blank space to save each. Run `Show-Board` and retain the output.
-2. Hold the first card's upper-right tack for about 200 ms, drag onto the other card, and release. Drag a card by its body. Confirm the string follows it. Run `Show-Board` to see the endpoint filenames and updated positions.
+2. Hold the first card's top-center tack for about 200 ms, drag onto the other card, and release. Drag a card by its body. Confirm the string follows it. Run `Show-Board` to see the endpoint filenames and updated positions.
 3. Click **Close**, wait for the window to disappear, and run `Open-Board`. Confirm the same cards, texts, locations and string appear. Run `Show-Board`.
 4. Right-click the string and choose **Cut String**. Close and reopen the same folder again. The string should be gone and both cards should remain in place. Run `Show-Board`.
 

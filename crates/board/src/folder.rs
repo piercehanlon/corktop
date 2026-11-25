@@ -188,6 +188,22 @@ impl Board {
         })
     }
 
+    pub fn note_path(&self, index: usize) -> io::Result<PathBuf> {
+        let card = self
+            .cards
+            .get(index)
+            .ok_or_else(|| invalid("unknown card"))?;
+        let path = self.root.join(&card.file);
+        if !path.symlink_metadata()?.is_file() {
+            return Err(invalid("expected a regular note file"));
+        }
+        Ok(path)
+    }
+
+    pub fn note_text(&self, index: usize) -> io::Result<String> {
+        read_text(&self.note_path(index)?, NOTE_LIMIT as u64)
+    }
+
     pub fn cards(&self) -> &[Card] {
         &self.cards
     }

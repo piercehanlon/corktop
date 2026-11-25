@@ -40,3 +40,5 @@ Inspect the window at the prompt and return the final JSON line. The verifier co
 For issue #2, run `.\verify-text-cards.ps1` from PowerShell inside the extracted Windows ZIP. Follow its prompts to create and drag the test note, fully close the app, and inspect the reopened folder. Return the final JSON line. The verifier reads the Markdown file independently and checks the manifest coordinates before and after restart.
 
 For the Pilot string round trip, run `.\verify-strings.ps1` in the extracted Windows ZIP or follow the included [manual test](../../scripts/test-strings-windows.md). Both routes retain the disposable board for inspection.
+
+For Everyday text cards, extract the ZIP into a fresh directory and run `.\verify-everyday.ps1` there. It checks the release identity, guides the clipboard, editor, move, connect and cut exercises, and checks files and manifests across fresh and Pilot-board restarts. Return the final JSON line.
