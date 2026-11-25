@@ -647,7 +647,12 @@ impl BoardWindow {
                 egui::ScrollArea::both()
                     .scroll_source(scroll)
                     .show_viewport(ui, |ui, viewport| {
-                        if let Err(e) = canvas.show(ui, viewport.size(), &mut self.materials) {
+                        if let Err(e) = canvas.show(
+                            ui,
+                            viewport.size(),
+                            &mut self.materials,
+                            self.preferences.as_mut(),
+                        ) {
                             self.error = format!("Board action failed: {e}");
                             ctx.request_repaint();
                         }
@@ -720,6 +725,7 @@ impl Canvas {
         ui: &mut egui::Ui,
         viewport: Vec2,
         materials: &mut material::Materials,
+        prefs: Option<&mut corktop_board::Preferences>,
     ) -> std::io::Result<()> {
         if let Ok(error) = self.open_error_rx.try_recv() {
             return Err(error);
@@ -837,7 +843,20 @@ impl Canvas {
             (cursor, mods)
         };
         let action = self.drop_action.with_keys(mods);
-        if hovering {
+        if hovering && action == file_drop::Action::Ask {
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                "ask-drop-highlight".into(),
+            ));
+            let edge = clip.shrink(2.);
+            painter.rect_filled(edge, 4., Color32::from_rgba_unmultiplied(255, 220, 154, 22));
+            painter.rect_stroke(
+                edge,
+                4.,
+                egui::Stroke::new(3., Color32::from_rgb(255, 224, 158)),
+                egui::StrokeKind::Inside,
+            );
+        } else if hovering {
             let label = action.badge();
             let screen = ui.ctx().screen_rect();
             let width = 182.0_f32.min(screen.width());
@@ -870,7 +889,12 @@ impl Canvas {
                 self.pending_drop.add(path.clone(), pos);
             }
         }
-        self.pending_drop.apply(ui, &mut self.board, action)?;
+        if let Some(chosen) = self.pending_drop.apply(ui, &mut self.board, action)?
+            && let Some(prefs) = prefs
+        {
+            prefs.store("file_drop_action", &chosen)?;
+            self.drop_action = chosen;
+        }
         let now = ui.input(|i| i.time);
         let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
         let mut dropped = None;
