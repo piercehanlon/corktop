@@ -28,6 +28,14 @@ impl Spatial {
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let now = ui.input(|i| i.time);
         if self.placing
+            && ui.input(|i| i.key_pressed(Key::Escape) || i.modifiers.command || i.modifiers.ctrl)
+        {
+            self.placing = false;
+        }
+        if self.placing && background.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if self.placing
             && background.clicked()
             && let Some(p) = pointer
         {

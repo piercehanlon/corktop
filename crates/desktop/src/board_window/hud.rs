@@ -11,7 +11,7 @@ impl Control {
     fn label(self) -> &'static str {
         match self {
             Self::Pin => "Place a tack",
-            Self::List => "Flat list",
+            Self::List => "Search cards",
             Self::Bin => "Recycle bin",
             Self::Settings => "Settings and help",
         }
@@ -23,14 +23,17 @@ impl Control {
         };
         match self {
             Self::Pin => {
-                p.circle_stroke(c + vec2(2., -3.), 4.2, stroke);
-                line(vec2(-0.5, 0.5), vec2(-6., 7.));
+                line(vec2(-4., -7.), vec2(4., -7.));
+                line(vec2(-3., -7.), vec2(-2., -1.));
+                line(vec2(3., -7.), vec2(2., -1.));
+                line(vec2(-2., -1.), vec2(-5., 2.));
+                line(vec2(2., -1.), vec2(5., 2.));
+                line(vec2(-5., 2.), vec2(5., 2.));
+                line(vec2(0., 2.), vec2(0., 9.));
             }
             Self::List => {
-                for y in [-5., 0., 5.] {
-                    line(vec2(-3., y), vec2(7., y));
-                    p.circle_filled(c + vec2(-7., y), 1.2, stroke.color);
-                }
+                p.circle_stroke(c + vec2(-2., -2.), 5.2, stroke);
+                line(vec2(2., 2.), vec2(8., 8.));
             }
             Self::Bin => {
                 p.rect_stroke(
@@ -69,6 +72,10 @@ impl BoardWindow {
                 .unwrap_or(0);
             canvas.link_drops = p.flag("link_file_drops", false);
         }
+        let auto_hide = self
+            .preferences
+            .as_ref()
+            .is_some_and(|p| p.flag("auto_hide_controls", false));
         for (control, corner, offset) in [
             (Control::Pin, rect.left_top(), vec2(22., 22.)),
             (Control::List, rect.right_top(), vec2(-22., 22.)),
@@ -76,7 +83,8 @@ impl BoardWindow {
             (Control::Settings, rect.right_bottom(), vec2(-22., -22.)),
         ] {
             let center = corner + offset;
-            let active = pointer.is_some_and(|p| p.distance(center) < 68.)
+            let active = !auto_hide
+                || pointer.is_some_and(|p| p.distance(center) < 68.)
                 || (control == Control::Pin && canvas.spatial.placing);
             let id = egui::Id::new(("corner", control.label()));
             let opacity = ctx.animate_bool_with_time(id.with("fade"), active, 0.17);
@@ -85,6 +93,8 @@ impl BoardWindow {
             }
             egui::Area::new(id)
                 .order(egui::Order::Middle)
+                .default_size(vec2(32., 32.))
+                .constrain(false)
                 .fixed_pos(center - vec2(16., 16.))
                 .movable(false)
                 .show(ctx, |ui| {
@@ -93,7 +103,11 @@ impl BoardWindow {
                     ui.painter().rect_filled(
                         r,
                         6.,
-                        Color32::from_black_alpha(if button.hovered() { 230 } else { 195 }),
+                        if control == Control::Pin && canvas.spatial.placing {
+                            Color32::from_rgb(134, 62, 32)
+                        } else {
+                            Color32::from_black_alpha(if button.hovered() { 230 } else { 195 })
+                        },
                     );
                     control.icon(ui.painter(), r.center());
                     if button.on_hover_text(control.label()).clicked() {
@@ -109,13 +123,16 @@ impl BoardWindow {
                 });
         }
         let bar = rect.width() > 120.
-            && pointer.is_some_and(|p| {
-                p.y < rect.top() + 45. && p.x > rect.left() + 42. && p.x < rect.right() - 42.
-            });
+            && (!auto_hide
+                || pointer.is_some_and(|p| {
+                    p.y < rect.top() + 45. && p.x > rect.left() + 42. && p.x < rect.right() - 42.
+                }));
         let fade = ctx.animate_bool_with_time("top-edge-fade".into(), bar, 0.2);
         if fade > 0. {
             let mut parent = None;
             egui::Area::new("top-edge".into())
+                .default_width((rect.width() - 90.).max(1.))
+                .constrain(false)
                 .fixed_pos(rect.left_top() + vec2(45., 5.))
                 .movable(false)
                 .show(ctx, |ui| {
@@ -129,7 +146,13 @@ impl BoardWindow {
                                 }
                                 ui.label("›");
                             }
-                            let name = ui.label(folder(&canvas.board)).interact(Sense::drag());
+                            let name = ui
+                                .add(
+                                    egui::Label::new(format!("Move · {}", folder(&canvas.board)))
+                                        .sense(Sense::drag()),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::Grab)
+                                .on_hover_text("Drag to move the window");
                             if !self.machine.desktop {
                                 if name.drag_started() {
                                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -193,6 +216,7 @@ impl BoardWindow {
         }
         if self.show_bin {
             egui::Window::new("Recycle bin")
+                .default_pos(rect.center() - vec2(110., 70.))
                 .open(&mut self.show_bin)
                 .show(ctx, |ui| {
                     let trash = canvas.board.trashed_files();

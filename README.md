@@ -21,4 +21,4 @@ Double-click a folder card to enter it. **Parent folder** returns to the previou
 
 **Ctrl+Z** undoes an in-session layout edit. Resizing scales the board until it reaches its readable minimum, then scrolling pans to the edges. Right-click empty cork and choose **Refit to Current Frame** to save new bounds.
 
-Hold a card body, right-click it, or choose **Edit** to change its paper color, show or hide its tack, reposition it, edit its title, or open its folder. The corner controls appear as the pointer approaches. The upper-right list can search child boards and reveal a matching card. On first launch, browse for a board folder or paste its path.
+Hold a card body, right-click it, or choose **Edit** to change its paper color, show or hide its tack, reposition it, edit its title, or open its folder. The corner controls stay visible by default. Settings can auto-hide them. Drag **Move** beside the board name to move the standard window, or drag its striped lower-right grip to resize. The upper-right list can search child boards and reveal a matching card. On first launch, browse for a board folder or paste its path.

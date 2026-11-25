@@ -275,7 +275,12 @@ impl Materials {
                 ),
             ));
         }
-        let dimensions = self.tile.as_ref().unwrap().1.size_vec2() * scale;
+        let density = if kit == Kit::Cork && self.custom_image.is_none() {
+            2.0
+        } else {
+            1.0
+        };
+        let dimensions = self.tile.as_ref().unwrap().1.size_vec2() * (scale / density);
         let uv = Rect::from_min_max(
             ((rect.min - origin) / dimensions).to_pos2(),
             ((rect.max - origin) / dimensions).to_pos2(),
@@ -293,9 +298,10 @@ fn noise(x: u32, y: u32) -> u32 {
 }
 fn tile(kit: Kit) -> egui::ColorImage {
     let base = kit.palette().0;
-    let mut pixels = Vec::with_capacity(192 * 192);
-    for y in 0..192u32 {
-        for x in 0..192u32 {
+    let size = if kit == Kit::Cork { 768 } else { 192 };
+    let mut pixels = Vec::with_capacity((size * size) as usize);
+    for y in 0..size {
+        for x in 0..size {
             let grain = (noise(x, y) % 11) as i32 - 5;
             let shade = match kit {
                 Kit::Cork => {
@@ -305,7 +311,10 @@ fn tile(kit: Kit) -> egui::ColorImage {
                         for dx in -1..=1 {
                             let cx = x as i32 / 8 + dx;
                             let cy = y as i32 / 8 + dy;
-                            let seed = noise(cx.rem_euclid(24) as u32, cy.rem_euclid(24) as u32);
+                            let seed = noise(
+                                cx.rem_euclid((size / 8) as i32) as u32,
+                                cy.rem_euclid((size / 8) as i32) as u32,
+                            );
                             let px = cx * 8 + (seed % 7) as i32 - x as i32;
                             let py = cy * 8 + ((seed >> 8) % 7) as i32 - y as i32;
                             let d = (px * px + py * py) as u32;
@@ -348,7 +357,7 @@ fn tile(kit: Kit) -> egui::ColorImage {
             ));
         }
     }
-    egui::ColorImage::new([192, 192], pixels)
+    egui::ColorImage::new([size as usize; 2], pixels)
 }
 
 fn select_override(

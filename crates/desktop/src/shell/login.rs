@@ -84,7 +84,7 @@ pub fn set(enabled: bool, exe: &Path) -> io::Result<()> {
             RegDeleteValueW(key, w!("corktop"))
         };
         RegCloseKey(key);
-        if code != ERROR_SUCCESS && !(code == ERROR_FILE_NOT_FOUND && !enabled) {
+        if code != ERROR_SUCCESS && (enabled || code != ERROR_FILE_NOT_FOUND) {
             return Err(io::Error::from_raw_os_error(code as i32));
         }
     }

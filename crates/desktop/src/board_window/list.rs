@@ -94,7 +94,8 @@ impl FlatList {
             }
         }
         let mut choice = None;
-        egui::Window::new("Flat list")
+        egui::Window::new("Search cards")
+            .default_pos(ctx.screen_rect().center() - vec2(215., 150.))
             .id("flat-list".into())
             .open(open)
             .default_width(430.)

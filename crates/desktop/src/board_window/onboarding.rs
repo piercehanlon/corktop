@@ -9,6 +9,16 @@ pub(super) struct Setup {
 }
 impl BoardWindow {
     pub(super) fn setup_card(&mut self, ctx: &egui::Context) {
+        if !self.machine.introduction_seen && self.machine.folder.is_none() {
+            if tutorial(ctx, &self.setup.style, "Continue to folder setup") {
+                self.machine.introduction_seen = true;
+                if let Err(e) = self.machine.save() {
+                    self.error = e.to_string();
+                }
+                ctx.request_repaint();
+            }
+            return;
+        }
         self.setup.active = true;
         let width = (ctx.screen_rect().width() - 32.).clamp(120., 420.);
         egui::Window::new("Open a corktop")
@@ -21,12 +31,19 @@ impl BoardWindow {
                     .max_height((ctx.screen_rect().height() - 84.).max(64.))
                     .show(ui, |ui| {
                         ui.label("Board folder");
-                        let field = ui.add(
-                            egui::TextEdit::singleline(&mut self.folder)
-                                .hint_text("Paste a folder path")
-                                .desired_width(width),
-                        );
-                        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                        let enter = ui
+                            .horizontal(|ui| {
+                                let field = ui.add(
+                                    egui::TextEdit::singleline(&mut self.folder)
+                                        .hint_text("Paste a folder path")
+                                        .desired_width((ui.available_width() - 78.).max(60.)),
+                                );
+                                if ui.button("Browse…").clicked() {
+                                    self.choose();
+                                }
+                                field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
+                            })
+                            .inner;
                         let before = self.setup.style.clone();
                         self.setup.style.controls(ui, &[]);
                         self.setup.styled |= before != self.setup.style;
@@ -38,9 +55,6 @@ impl BoardWindow {
                             self.setup.links = Some(link);
                         }
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Browse…").clicked() {
-                                self.choose();
-                            }
                             if ui
                                 .add_enabled(
                                     !self.folder.trim().is_empty(),
@@ -80,7 +94,7 @@ const LESSONS: [(&str, &str); 4] = [
     ),
 ];
 
-pub(super) fn tutorial(ctx: &egui::Context, style: &material::Style) -> bool {
+pub(super) fn tutorial(ctx: &egui::Context, style: &material::Style, continue_label: &str) -> bool {
     let screen = ctx.screen_rect();
     let columns = if screen.width() > 460. { 2 } else { 1 };
     // The lesson cards live only in the UI. Notes made on the surrounding board use normal storage.
@@ -93,7 +107,7 @@ pub(super) fn tutorial(ctx: &egui::Context, style: &material::Style) -> bool {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.strong("Board tutorial");
-                    if ui.button("Skip / Clear tutorial").clicked() {
+                    if ui.button(continue_label).clicked() {
                         done = true;
                     }
                 })
