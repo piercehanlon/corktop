@@ -1,0 +1,8 @@
+[versions]
+rustc = "1.90.0"
+cargo = "1.90.0"
+rustfmt = "1.8.0-stable"
+clippy = "0.1.90"
+make = "4.3"
+gitleaks = "8.24.3"
+cargo-deny = "0.22.1"

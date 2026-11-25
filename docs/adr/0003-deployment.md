@@ -1,6 +1,6 @@
 # 0003 · Verify native installs on both platforms
 
-**Status** Proposed for Pilot.
+**Status** Accepted for Pilot.
 
 **Context** The product is a desktop executable. Both supported systems need proof that the installed build starts.
 

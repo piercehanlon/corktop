@@ -1,6 +1,6 @@
 # 0002 · Package tests and evidence
 
-**Status** Proposed for Pilot.
+**Status** Accepted for Pilot.
 
 **Context** Local CI runs on a shared host. A cached success must represent the exact inputs under test.
 
