@@ -106,20 +106,22 @@ impl Geometry {
 
 impl Board {
     pub fn canvas_size(&self) -> Point {
-        if let Some(size) = self.manifest.get("canvas_size").and_then(Value::as_array)
+        let base = if let Some(size) = self.manifest.get("canvas_size").and_then(Value::as_array)
             && let [w, h] = size.as_slice()
             && let (Some(w), Some(h)) = (w.as_integer(), h.as_integer())
         {
-            return [
+            [
                 w.clamp(220, 1_000_220) as i32,
                 h.clamp(112, 1_000_112) as i32,
-            ];
-        }
+            ]
+        } else {
+            [764, 499]
+        };
         self.cards
             .iter()
             .map(|c| [c.position[0] + 220, c.position[1] + 112])
             .chain(self.geometry.pins.iter().map(|p| [p[0] + 12, p[1] + 12]))
-            .fold([764, 499], |a, b| [a[0].max(b[0]), a[1].max(b[1])])
+            .fold(base, |a, b| [a[0].max(b[0]), a[1].max(b[1])])
     }
 
     pub fn refit(&mut self, viewport: Point) -> io::Result<()> {
@@ -377,7 +379,28 @@ impl Board {
         })
     }
 
+    pub fn zone_translation(&self, index: usize, requested: Point) -> io::Result<Point> {
+        let g = &self.geometry;
+        let zone = g.zones.get(index).ok_or_else(|| invalid("unknown zone"))?;
+        let enclosed = self
+            .cards
+            .iter()
+            .filter(|c| g.contains(index, [c.position[0] + 110, c.position[1] + 56]))
+            .map(|c| c.position);
+        let mut delta = requested;
+        for p in zone.pins.iter().map(|&i| g.pins[i]).chain(enclosed) {
+            for a in 0..2 {
+                delta[a] = delta[a].clamp(-p[a], 1_000_000 - p[a]);
+            }
+        }
+        Ok(delta)
+    }
+
     pub fn move_zone(&mut self, index: usize, delta: Point) -> io::Result<()> {
+        let delta = self.zone_translation(index, delta)?;
+        if delta == [0, 0] {
+            return Ok(());
+        }
         let mut g = self.geometry.clone();
         let zone = g.zones.get(index).ok_or_else(|| invalid("unknown zone"))?;
         let mut next = self.manifest.clone();
@@ -528,6 +551,18 @@ impl Board {
 mod tests {
     use super::*;
     #[test]
+    fn reopening_includes_content_past_saved_frame() {
+        let root = tempfile::tempdir().unwrap();
+        let mut b = Board::open(root.path()).unwrap();
+        b.refit([764, 499]).unwrap();
+        b.create("Wide", [930, 20]).unwrap();
+        b.add_pin([1200, 700]).unwrap();
+        drop(b);
+        let b = Board::open(root.path()).unwrap();
+        assert_eq!(b.canvas_size(), [1212, 712]);
+    }
+
+    #[test]
     fn removing_a_tack_keeps_surviving_strings_attached_after_reopen() {
         let root = tempfile::tempdir().unwrap();
         let mut board = Board::open(root.path()).unwrap();
@@ -562,6 +597,10 @@ mod tests {
         let d = b.tie_divider(c, None, [0, 350], 3).unwrap();
         b.tie_divider(d, Some(a), [0, 0], 5).unwrap();
         b.name_zone(vec![a, c, d], "Case notes".into()).unwrap();
+        b.move_zone(0, [-35, 9]).unwrap();
+        assert_eq!(b.geometry().pins[0], [0, 9]);
+        assert_eq!(b.cards()[0].position, [12, 21]);
+        assert!(b.undo_layout().unwrap());
         b.move_zone(0, [10, 15]).unwrap();
         assert_eq!(b.cards()[0].position, [22, 27]);
         assert_eq!(b.cards()[1].position, [400, 400]);

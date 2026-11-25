@@ -3,7 +3,6 @@ use super::*;
 #[derive(Clone, Copy)]
 enum RailIcon {
     Pin,
-    Inbox,
     Search,
     Trash,
     Settings,
@@ -53,11 +52,6 @@ fn rail_button(
             line([2., -1.], [4., 2.]);
             line([-4., 2.], [4., 2.]);
             line([0., 2.], [0., 8.]);
-        }
-        RailIcon::Inbox => {
-            box_at(-7., -5., 14., 10.);
-            line([-6., -4.], [0., 0.]);
-            line([0., 0.], [6., -4.]);
         }
         RailIcon::Search => {
             p.circle_stroke(c - vec2(1.5, 1.5), 5., stroke);
@@ -176,50 +170,6 @@ impl BoardWindow {
                             {
                                 self.flat_list = Some(list::FlatList::open(&canvas.board));
                             }
-                            if count > 0 {
-                                let r = rail_button(
-                                    ui,
-                                    RailIcon::Inbox,
-                                    &format!("Inbox · {count} pending"),
-                                    width,
-                                    false,
-                                );
-                                ui.painter().text(
-                                    r.rect.right_top(),
-                                    egui::Align2::RIGHT_TOP,
-                                    count.to_string(),
-                                    egui::FontId::proportional(9.),
-                                    Color32::WHITE,
-                                );
-                                egui::Popup::menu(&r).gap(5.).show(|ui| {
-                                    let mut selected = None;
-                                    egui::ScrollArea::vertical()
-                                        .max_height(240.)
-                                        .show(ui, |ui| {
-                                            for f in canvas.board.inbox() {
-                                                if ui.button(f).clicked() {
-                                                    selected = Some(f.clone());
-                                                    ui.close();
-                                                }
-                                            }
-                                        });
-                                    if let Some(f) = selected
-                                        && let Err(e) = canvas.board.pin_files(&[f])
-                                    {
-                                        self.error = e.to_string();
-                                    }
-                                });
-                            } else {
-                                ui.add_enabled_ui(false, |ui| {
-                                    rail_button(
-                                        ui,
-                                        RailIcon::Inbox,
-                                        "Inbox is empty",
-                                        width,
-                                        false,
-                                    );
-                                });
-                            }
                             if rail_button(
                                 ui,
                                 RailIcon::Pin,
@@ -269,6 +219,51 @@ impl BoardWindow {
             self.canvas = self.parents.pop();
             self.flat_list = None;
             return;
+        }
+        if count > 0 {
+            egui::Area::new("inbox-corner".into())
+                .anchor(
+                    egui::Align2::RIGHT_TOP,
+                    vec2(-12., if reveal { 42. } else { 12. }),
+                )
+                .movable(false)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let phase = (ui.input(|i| i.time) as f32 * 2.4).sin() * 0.5 + 0.5;
+                            let (r, _) = ui.allocate_exact_size(vec2(10., 12.), Sense::hover());
+                            ui.painter().circle_filled(
+                                r.center(),
+                                4.,
+                                Color32::from_rgb(
+                                    (155. + 100. * phase) as u8,
+                                    (46. + 79. * phase) as u8,
+                                    35,
+                                ),
+                            );
+                            let inbox = ui.button(format!("Inbox +{count}"));
+                            egui::Popup::menu(&inbox).gap(5.).show(|ui| {
+                                let mut pin = None;
+                                egui::ScrollArea::vertical()
+                                    .max_height(240.)
+                                    .show(ui, |ui| {
+                                        for file in canvas.board.inbox() {
+                                            if ui.button(file).clicked() {
+                                                pin = Some(file.clone());
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                if let Some(file) = pin
+                                    && let Err(e) = canvas.board.pin_files(&[file])
+                                {
+                                    self.error = e.to_string();
+                                }
+                            });
+                        });
+                    });
+                });
+            ctx.request_repaint_after(Duration::from_millis(180));
         }
         if self.show_bin {
             egui::Window::new("Recycle bin")

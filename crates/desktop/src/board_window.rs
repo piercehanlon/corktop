@@ -11,7 +11,9 @@ mod material;
 mod onboarding;
 mod opener;
 mod placard;
+mod settings;
 mod spatial;
+use settings::SettingsTab;
 
 const CARD_SIZE: Vec2 = vec2(220.0, 112.0);
 
@@ -87,6 +89,7 @@ pub struct BoardWindow {
     #[cfg(windows)]
     tray: Option<crate::shell::tray::Handle>,
     showing_settings: bool,
+    settings_tab: SettingsTab,
     show_bin: bool,
     setup: onboarding::Setup,
     tutorial: bool,
@@ -526,148 +529,7 @@ impl BoardWindow {
             }
         }
         if self.showing_settings {
-            let mut show = true;
-            egui::Window::new("Settings")
-                .vscroll(true)
-                .open(&mut show)
-                .show(ctx, |ui| {
-                    ui.collapsing("Help", |ui| {
-                        for instruction in [
-                            "Click a card to copy. Double-click to open its file.",
-                            "Right-click a card for editing or recycling. Drag its body to move.",
-                            "Drag empty banner space to move the window; drag any edge or corner to resize.",
-                            "Double-click empty board space to write. Ctrl+Enter saves.",
-                            "Drag a pinhead or tack to connect. Shift-drag a bare tack to move it. Scroll to change yarn color.",
-                            "Connect three bare tacks in a loop to name a zone.",
-                            "Right-click a strand to cut it. Ctrl+Z undoes a board edit.",
-                            "Hold Ctrl to alternate copy and link on drop. Shift moves the file.",
-                        ] {
-                            ui.label(instruction);
-                        }
-                    });
-                    if ui.button("Switch folder…").clicked() {
-                        self.choose();
-                    }
-                    if ui.button("New panel").clicked()
-                        && let Some(c) = &self.control
-                    {
-                        c.sender.send(crate::shell::control::Action::Panel);
-                    }
-                    ui.checkbox(&mut self.machine.desktop, "Desktop layer");
-                    let mut start = self.machine.start_with_os;
-                    if ui.checkbox(&mut start, "Start with OS").changed() {
-                        match std::env::current_exe()
-                            .and_then(|exe| crate::shell::login::set(start, &exe))
-                        {
-                            Ok(()) => {
-                                self.machine.start_with_os = start;
-                                if let Err(e) = self.machine.save() {
-                                    self.error = e.to_string();
-                                }
-                            }
-                            Err(e) => self.error = e.to_string(),
-                        }
-                    }
-                    if let Some(prefs) = &mut self.preferences {
-                        if ui.button("Replay tutorial").clicked() {
-                            match prefs.set("tutorial_seen", false.into()) {
-                                Ok(()) => {
-                                    self.tutorial = true;
-                                }
-                                Err(e) => self.error = e.to_string(),
-                            }
-                        }
-                        let mut style = self.materials.style.clone();
-                        style.controls(ui, &self.materials.files);
-                        if ui
-                            .button("Reload overrides")
-                            .on_hover_text(".corktop/overrides/")
-                            .clicked()
-                        {
-                            match prefs.override_files().and_then(|files| {
-                                self.materials.files = files;
-                                self.materials.load_assets(prefs)
-                            }) {
-                                Ok(()) => self.fonts_dirty = true,
-                                Err(e) => self.error = e.to_string(),
-                            }
-                        }
-                        if style != self.materials.style {
-                            match prefs.store("appearance", &style) {
-                                Ok(()) => {
-                                    let changed = self.materials.style.font != style.font
-                                        || self.materials.style.texture != style.texture;
-                                    self.materials.style = style;
-                                    if changed {
-                                        if let Err(e) = self.materials.load_assets(prefs) {
-                                            self.error = e.to_string();
-                                        }
-                                        self.fonts_dirty = true;
-                                    }
-                                }
-                                Err(e) => self.error = e.to_string(),
-                            }
-                        }
-                        let mut enabled = prefs.flag("true_believer_mode", false);
-                        if ui
-                            .checkbox(&mut enabled, "True Believer Mode")
-                            .on_hover_text("Maintains signal alignment.")
-                            .changed()
-                        {
-                            if let Err(e) = prefs.set("true_believer_mode", enabled.into()) {
-                                self.error = e.to_string();
-                            } else if !enabled {
-                                self.smart_until =
-                                    Some(std::time::Instant::now() + Duration::from_secs(2));
-                            }
-                        }
-                        if let Some(left) = self
-                            .smart_until
-                            .and_then(|end| end.checked_duration_since(std::time::Instant::now()))
-                        {
-                            ui.small("Smart.");
-                            ctx.request_repaint_after(left);
-                        }
-                        let saved = prefs
-                            .get::<u8>("ghost_retention_days")
-                            .ok()
-                            .flatten()
-                            .unwrap_or(0);
-                        let mut days = saved;
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Dismiss missing cards after");
-                            for (v, label) in [(0, "Never"), (1, "24 hours"), (7, "7 days")] {
-                                ui.selectable_value(&mut days, v, label);
-                            }
-                        });
-                        if days != saved
-                            && let Err(e) = prefs.store("ghost_retention_days", &days)
-                        {
-                            self.error = e.to_string();
-                        }
-                        let mut action = file_drop::Action::saved(prefs);
-                        if action.setting(ui)
-                            && let Err(e) = prefs.store("file_drop_action", &action)
-                        {
-                            self.error = e.to_string();
-                        }
-                        for (key, label) in [
-                            (
-                                "display_only_titles",
-                                "Keep the filename when editing a card title",
-                            ),
-                            ("auto_hide_controls", "Auto-hide top bar"),
-                        ] {
-                            let mut value = prefs.flag(key, false);
-                            if ui.checkbox(&mut value, label).changed()
-                                && let Err(e) = prefs.set(key, value.into())
-                            {
-                                self.error = e.to_string();
-                            }
-                        }
-                    }
-                });
-            self.showing_settings = show;
+            self.settings(ctx);
         }
         let panel = egui::CentralPanel::default();
         let panel = if self.canvas.is_some() && self.occupied.is_none() {
@@ -814,10 +676,9 @@ impl Canvas {
             self.board.undo_layout()?;
             ui.ctx().request_repaint();
         }
-        let extent = offset(self.board.canvas_size());
-        let scale = (viewport.x / extent.x)
-            .min(viewport.y / extent.y)
-            .clamp(0.72, 2.0);
+        // Size paper for readability independently of the stored board bounds.
+        let scale = (viewport.x / 764.).min(viewport.y / 499.).clamp(0.9, 1.1);
+        let extent = offset(self.board.canvas_size()).max(viewport / scale);
         let (canvas, background) = ui.allocate_exact_size(extent * scale, Sense::click());
         let origin = canvas.min;
         let card_position = |p: Vec2| logical((p / scale).min(extent - CARD_SIZE));
@@ -949,6 +810,7 @@ impl Canvas {
         }
         let mut card_action = None;
         let mut pin_edit = None;
+        let mut reveal_outline = None;
         let mut rects = Vec::with_capacity(self.board.cards().len());
         for (idx, card) in self.board.cards().iter().enumerate() {
             let position = self
@@ -1061,12 +923,7 @@ impl Canvas {
                     ui.scroll_to_rect(rect, Some(egui::Align::Center));
                 }
                 let pulse = (left.as_secs_f32() * 10.).sin() * 0.5 + 0.5;
-                ui.painter().rect_stroke(
-                    rect.expand(3. + pulse * 3.),
-                    6.,
-                    egui::Stroke::new(2. + pulse * 2., Color32::WHITE),
-                    egui::StrokeKind::Outside,
-                );
+                reveal_outline = Some((rect.expand(3. + pulse * 3.), pulse));
                 ui.ctx().request_repaint();
             }
             rects.push(rect);
@@ -1241,7 +1098,7 @@ impl Canvas {
                 self.board.empty_trash()?;
             }
         }
-        self.card_options(ui, style)?;
+        self.card_options(ui, style, extent)?;
         if rects.len() != self.board.cards().len() {
             ui.ctx().request_repaint();
             return Ok(());
@@ -1304,7 +1161,15 @@ impl Canvas {
             }
             self.board.move_card(idx, pos)?;
         }
-        self.show_strings(ui, &rects, origin, scale, style)?;
+        if let Some((outline, pulse)) = reveal_outline {
+            ui.painter().rect_stroke(
+                outline,
+                6.,
+                egui::Stroke::new(4. + pulse * 2., Color32::from_rgb(200, 12, 51)),
+                egui::StrokeKind::Outside,
+            );
+        }
+        self.show_strings(ui, &rects, origin, scale, style, extent)?;
         self.spatial
             .show(&mut self.board, ui, origin, scale, &background, style)?;
         if self.board.cards().len() != rects.len() {
@@ -1411,7 +1276,12 @@ impl Canvas {
         }
         Ok(())
     }
-    fn card_options(&mut self, ui: &egui::Ui, style: &material::Style) -> std::io::Result<()> {
+    fn card_options(
+        &mut self,
+        ui: &egui::Ui,
+        style: &material::Style,
+        extent: Vec2,
+    ) -> std::io::Result<()> {
         let Some(options) = &mut self.options else {
             return Ok(());
         };
@@ -1425,7 +1295,7 @@ impl Canvas {
             return Ok(());
         };
         let card = &self.board.cards()[idx];
-        let max = logical((offset(self.board.canvas_size()) - CARD_SIZE).max(Vec2::ZERO));
+        let max = logical((extent - CARD_SIZE).max(Vec2::ZERO));
         let mut close = false;
         let mut apply = false;
         let mut dismiss = false;
@@ -1657,10 +1527,12 @@ impl Canvas {
         origin: Pos2,
         scale: f32,
         style: &material::Style,
+        extent: Vec2,
     ) -> std::io::Result<()> {
         let pointer = ui.input(|i| i.pointer.interact_pos());
 
-        let right_click = ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
+        let right_click = self.spatial.relocate.is_none()
+            && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
             && ui.ui_contains_pointer()
             && self.draft.is_none();
         let mut closest = None;
@@ -1674,7 +1546,14 @@ impl Canvas {
             ));
         }
         let g = self.board.geometry();
-        let pin = |i: usize| origin + offset(g.pins[i]) * scale;
+        let pin = |i: usize| {
+            let pos = origin + offset(g.pins[i]) * scale;
+            if self.spatial.relocate == Some(i) {
+                pointer.unwrap_or(pos)
+            } else {
+                pos
+            }
+        };
         let straight = |a: Pos2, b: Pos2| std::array::from_fn(|j| a.lerp(b, j as f32 / 16.0));
         for (i, d) in g.dividers.iter().enumerate() {
             threads.push((
@@ -1758,10 +1637,7 @@ impl Canvas {
                     self.tack_drag = None;
                     self.board.connect_colored(source, target, color)?;
                 } else if released && !cards[source].contains(p) {
-                    let pos = logical(
-                        ((p - origin) / scale)
-                            .min(offset(self.board.canvas_size()) - vec2(6.0, 6.0)),
-                    );
+                    let pos = logical(((p - origin) / scale).min(extent - vec2(6.0, 6.0)));
                     let pin = self
                         .board
                         .geometry()
