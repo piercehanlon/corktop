@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod board_window;
+use board_window::BoardWindow;
 use eframe::egui;
 use std::process::ExitCode;
 
@@ -35,7 +37,7 @@ fn main() -> ExitCode {
         return failure("unexpected arguments");
     }
     match (command, parameter) {
-        (None, None) => {
+        (Some(flag), None) if flag == "--version-window" => {
             let options = eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default()
                     .with_decorations(false)
@@ -52,6 +54,8 @@ fn main() -> ExitCode {
                 return failure("window initialization failed");
             }
         }
+        (None, None) => return board_window(None),
+        (Some(flag), Some(path)) if flag == "--board" => return board_window(Some(path)),
         (Some(flag), None) if flag == "--version" => println!("{VERSION}"),
         (Some(flag), None) if flag == "--identity" => println!(
             "{}",
@@ -87,10 +91,27 @@ fn main() -> ExitCode {
         }
         _ => {
             failure(
-                "expected --version, --identity, --health, --ready, --probe PATH, or no arguments",
+                "expected --board PATH, --version-window, --version, --identity, --health, --ready, --probe PATH, or no arguments",
             );
             return ExitCode::from(2);
         }
+    }
+    ExitCode::SUCCESS
+}
+
+fn board_window(path: Option<std::ffi::OsString>) -> ExitCode {
+    let mut app = BoardWindow::default();
+    if let Some(path) = path {
+        app.open(std::path::Path::new(&path));
+    }
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_decorations(false)
+            .with_inner_size([780.0, 540.0]),
+        ..Default::default()
+    };
+    if eframe::run_native("Corktop", options, Box::new(move |_| Ok(Box::new(app)))).is_err() {
+        return failure("window initialization failed");
     }
     ExitCode::SUCCESS
 }

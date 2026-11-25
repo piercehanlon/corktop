@@ -10,4 +10,6 @@ Pilot serves a desktop user who keeps short notes in one folder and arranges rel
 
 | TBD | Decision point |
 |---|---|
-| Card controls and string gestures | Confirm during design before feature UI work. |
+| String gestures | Confirm during design before string UI work. |
+
+For text cards, double-click empty canvas to enter a title on line one and a body below it. Ctrl+Enter or clicking outside saves the note. Dragging and releasing a saved card commits its new position.

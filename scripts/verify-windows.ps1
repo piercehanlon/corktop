@@ -55,7 +55,7 @@ try {
         (Invoke-Corktop --probe $board) -ne $first -or (Get-BoardState $board) -ne $state) {
         throw 'Migrated state mismatch'
     }
-    $window = Start-Process -FilePath $exe -PassThru
+    $window = Start-Process -FilePath $exe -ArgumentList "--version-window" -PassThru
     try {
         $answer = Read-Host "Inspect the borderless Corktop window and type the only text it displays"
         if ($window.HasExited -or $answer -ne $version) { throw 'Window check incomplete' }

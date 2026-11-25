@@ -1,5 +1,7 @@
-//! Persistence probe for disposable Pilot boards.
-use std::fs::{self, File, OpenOptions};
+//! Folder boards and the disposable installation probe.
+mod folder;
+pub use folder::{Board, Card};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use toml::{Table, Value};
@@ -14,19 +16,55 @@ fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid synthetic board")
 }
 
-fn load(root: &Path) -> io::Result<Table> {
-    let path = root.join(MANIFEST);
+fn nofollow_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    options
+}
+
+fn read_text(path: &Path, limit: u64) -> io::Result<String> {
     if !path.symlink_metadata()?.is_file() {
-        return Err(invalid());
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected a regular file",
+        ));
+    }
+    let file = nofollow_options().read(true).open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid file size or type",
+        ));
     }
     let mut text = String::new();
-    File::open(path)?
-        .take(LIMIT + 1)
-        .read_to_string(&mut text)?;
-    if text.len() as u64 > LIMIT {
-        return Err(invalid());
+    file.take(limit + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds size limit",
+        ));
     }
-    let table: Table = toml::from_str(&text).map_err(|_| invalid())?;
+    Ok(text)
+}
+
+fn read_manifest(root: &Path) -> io::Result<Table> {
+    toml::from_str(&read_text(&root.join(MANIFEST), LIMIT)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid board manifest"))
+}
+
+fn load(root: &Path) -> io::Result<Table> {
+    let table = read_manifest(root)?;
     if table.get("marker").and_then(Value::as_str) != Some(MARKER) {
         return Err(invalid());
     }
@@ -35,8 +73,19 @@ fn load(root: &Path) -> io::Result<Table> {
 
 fn save(root: &Path, table: &Table) -> io::Result<()> {
     let mut pending = tempfile::NamedTempFile::new_in(root)?;
-    pending.write_all(toml::to_string(table).map_err(|_| invalid())?.as_bytes())?;
+    let text = toml::to_string(table).map_err(|_| invalid())?;
+    if text.len() as u64 > LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "manifest exceeds size limit",
+        ));
+    }
+    pending.write_all(text.as_bytes())?;
     pending.as_file().sync_all()?;
+    #[cfg(test)]
+    if std::env::var_os("CORKTOP_TEST_INTERRUPT_ROOT").as_deref() == Some(root.as_os_str()) {
+        std::process::exit(73);
+    }
     pending.persist(root.join(MANIFEST))?;
     Ok(())
 }
