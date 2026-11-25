@@ -20,6 +20,8 @@ struct TackDrag {
 
 struct Canvas {
     board: Board,
+    open_error_tx: std::sync::mpsc::Sender<std::io::Error>,
+    open_error_rx: std::sync::mpsc::Receiver<std::io::Error>,
     draft: Option<Draft>,
     moving: Option<(usize, [i32; 2])>,
     tack_drag: Option<TackDrag>,
@@ -40,7 +42,10 @@ impl BoardWindow {
     pub fn open(&mut self, path: &Path) {
         match Board::open(path) {
             Ok(board) => {
+                let (open_error_tx, open_error_rx) = std::sync::mpsc::channel();
                 self.canvas = Some(Canvas {
+                    open_error_tx,
+                    open_error_rx,
                     board,
                     draft: None,
                     moving: None,
@@ -91,6 +96,7 @@ impl eframe::App for BoardWindow {
                     .show_viewport(ui, |ui, viewport| {
                         if let Err(e) = canvas.show(ui, viewport.size()) {
                             self.error = format!("Board action failed: {e}");
+                            ctx.request_repaint();
                         }
                     });
             } else {
@@ -135,6 +141,9 @@ fn strand(a: Pos2, b: Pos2) -> [Pos2; 17] {
 
 impl Canvas {
     fn show(&mut self, ui: &mut egui::Ui, viewport: Vec2) -> std::io::Result<()> {
+        if let Ok(error) = self.open_error_rx.try_recv() {
+            return Err(error);
+        }
         let mut size = viewport;
         for card in self.board.cards() {
             size = size.max(offset(card.position) + CARD_SIZE);
@@ -174,7 +183,11 @@ impl Canvas {
             if self.draft.is_none() && response.clicked() {
                 if response.double_clicked() && self.pending_copy.is_some_and(|(id, _)| id == idx) {
                     self.pending_copy = None;
-                    opener::open(&self.board.note_path(idx)?)?;
+                    opener::launch(
+                        self.board.note_path(idx)?,
+                        self.open_error_tx.clone(),
+                        ui.ctx().clone(),
+                    )?;
                 } else {
                     self.pending_copy = Some((idx, now + delay));
                 }

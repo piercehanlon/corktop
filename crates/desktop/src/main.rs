@@ -110,7 +110,25 @@ fn board_window(path: Option<std::ffi::OsString>) -> ExitCode {
             .with_inner_size([780.0, 540.0]),
         ..Default::default()
     };
-    if eframe::run_native("corktop", options, Box::new(move |_| Ok(Box::new(app)))).is_err() {
+    if eframe::run_native(
+        "corktop",
+        options,
+        Box::new(move |_cc| {
+            #[cfg(windows)]
+            {
+                // Use the same user-configured interval for recognition and deferred copy.
+                let millis = unsafe {
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime()
+                };
+                _cc.egui_ctx.options_mut(|o| {
+                    o.input_options.max_double_click_delay = f64::from(millis) / 1000.0
+                });
+            }
+            Ok(Box::new(app))
+        }),
+    )
+    .is_err()
+    {
         return failure("window initialization failed");
     }
     ExitCode::SUCCESS

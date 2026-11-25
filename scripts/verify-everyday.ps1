@@ -44,10 +44,10 @@ try {
     Confirm-View 'Single-click the first card body. Did the copied stamp appear? Wait a moment and paste into Notepad. Did all three lines appear?'
     Check-Clipboard $payload
     Set-Clipboard -Value $sentinel
-    Confirm-View "Double-click the first card body. Did your associated editor open $($names[0]) with the expected text? Close the editor."
+    Confirm-View "Double-click the first card body. Did your associated editor open $($names[0]) with the expected text? Leave the editor open."
     Check-Clipboard $sentinel
     $before = Card-State
-    Confirm-View 'Drag the left card by its body a short distance. Did it move?'
+    Confirm-View 'With the editor still open, switch back to corktop and drag the left card by its body a short distance. Did it move immediately? You may now close the editor.'
     if ((Card-State) -ceq $before) { throw 'Move did not persist' }
     Check-Clipboard $sentinel
     $before = Card-State
