@@ -65,7 +65,7 @@ export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc-posix
 cargo build --release --locked -p corktop --target x86_64-pc-windows-gnu
 ```
 
-The executable is `target/x86_64-pc-windows-gnu/release/corktop.exe`. 
+The executable is `target/x86_64-pc-windows-gnu/release/corktop.exe`.
 
 ### Package a release
 

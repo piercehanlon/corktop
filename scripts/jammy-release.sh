@@ -17,17 +17,19 @@ root="$work/root"
 mkdir "$root"
 tar --no-same-owner -xzf "$cache/$base" -C "$root"
 cp -L --remove-destination /etc/resolv.conf "$root/etc/resolv.conf"
-mkdir -p "$root/etc/ssl/certs"
+# The rootless runtime has one mapped group. Pre-create the optional shared
+# font directory so fontconfig does not try to assign it to the staff group.
+mkdir -p "$root/etc/ssl/certs" "$root/usr/local/share/fonts"
 cp /etc/ssl/certs/ca-certificates.crt "$root/etc/ssl/certs/"
-sed -i 's|http://|https://|g' "$root/etc/apt/sources.list"
+sed -i -e 's|http://|https://|g' -e '/^deb .* restricted$/s/ restricted$//' -e '/^deb .* multiverse$/d' "$root/etc/apt/sources.list"
 box=(bwrap --unshare-user --uid 0 --gid 0 --bind "$root" / --dev /dev --proc /proc --tmpfs /tmp --clearenv --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin --setenv HOME /tmp --setenv DEBIAN_FRONTEND noninteractive)
 if [[ "$mode" == build ]]; then
     deps=(build-essential git pkg-config libxkbcommon-dev libwayland-dev)
 else
-    deps=(xvfb xauth x11-utils libxkbcommon0 libxkbcommon-x11-0 libegl1 libgl1-mesa-dri libglx-mesa0)
+    deps=(xvfb xauth x11-utils libxcursor1 libxkbcommon0 libxkbcommon-x11-0 libegl1 libgl1-mesa-dri libglx-mesa0)
 fi
-"${box[@]}" apt-get -o APT::Sandbox::User=root update -qq
-"${box[@]}" apt-get -o APT::Sandbox::User=root install -y --no-install-recommends "${deps[@]}"
+"${box[@]}" apt-get -o Acquire::Languages=none -o APT::Sandbox::User=root update -qq
+"${box[@]}" apt-get -o Acquire::Languages=none -o APT::Sandbox::User=root install -y --no-install-recommends "${deps[@]}"
 if [[ "$mode" == build ]]; then
     target=x86_64-unknown-linux-gnu
     cargo fetch --locked --target "$target"
