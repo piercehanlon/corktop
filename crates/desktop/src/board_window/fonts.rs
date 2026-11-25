@@ -1,6 +1,6 @@
 use eframe::egui::{Context, FontData, FontDefinitions, FontFamily};
 
-pub(super) fn install(ctx: &Context) {
+pub(super) fn install(ctx: &Context, custom: Option<std::sync::Arc<FontData>>) {
     let mut fonts = FontDefinitions::default();
     for (family, name, bytes) in [
         (
@@ -33,5 +33,13 @@ pub(super) fn install(ctx: &Context) {
             .or_default()
             .insert(0, name.into());
     }
+    let mut titles = vec!["Permanent Marker".to_owned(), "Barlow".to_owned()];
+    if let Some(data) = custom {
+        fonts.font_data.insert("Board font".into(), data);
+        titles.insert(0, "Board font".into());
+    }
+    fonts
+        .families
+        .insert(FontFamily::Name("Custom title".into()), titles);
     ctx.set_fonts(fonts);
 }

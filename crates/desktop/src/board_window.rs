@@ -4,6 +4,7 @@ use std::{path::Path, time::Duration};
 
 mod fonts;
 mod images;
+mod material;
 mod opener;
 mod placard;
 mod spatial;
@@ -58,6 +59,8 @@ pub struct BoardWindow {
     pub control: Option<crate::shell::control::Control>,
     pub panel: bool,
     placard: placard::Placard,
+    materials: material::Materials,
+    fonts_dirty: bool,
     smart_until: Option<std::time::Instant>,
     #[cfg(target_os = "linux")]
     pub change_host: bool,
@@ -85,7 +88,9 @@ impl BoardWindow {
     }
 
     pub fn attach(&mut self, ctx: &egui::Context) {
-        fonts::install(ctx);
+        fonts::install(ctx, self.materials.custom_font.clone());
+        self.fonts_dirty = false;
+        self.materials.reset();
         self.placard.invalidate();
         for canvas in self.parents.iter_mut().chain(self.canvas.iter_mut()) {
             canvas.images.reset_textures();
@@ -226,6 +231,12 @@ impl BoardWindow {
     fn show_root(&mut self, result: std::io::Result<Board>) {
         let result = result.and_then(|board| {
             let preferences = corktop_board::Preferences::load(board.root())?;
+            self.materials.style = preferences.get("appearance")?.unwrap_or_default();
+            self.materials.files = preferences.override_files().unwrap_or_default();
+            if let Err(e) = self.materials.load_assets(&preferences) {
+                eprintln!("Appearance override: {e}");
+            }
+            self.fonts_dirty = true;
             self.preferences = Some(preferences);
             self.parents.clear();
             Ok(board)
@@ -308,6 +319,11 @@ impl BoardWindow {
                 .or(self.canvas.as_ref())
                 .map(|c| c.board.root()),
         );
+        if self.fonts_dirty {
+            fonts::install(ctx, self.materials.custom_font.clone());
+            self.placard.invalidate();
+            self.fonts_dirty = false;
+        }
         let enabled = self.canvas.is_some()
             && self
                 .preferences
@@ -423,6 +439,37 @@ impl BoardWindow {
                         }
                     }
                     if let Some(prefs) = &mut self.preferences {
+                        let mut style = self.materials.style.clone();
+                        style.controls(ui, &self.materials.files);
+                        if ui
+                            .button("Reload overrides")
+                            .on_hover_text(".corktop/overrides/")
+                            .clicked()
+                        {
+                            match prefs.override_files().and_then(|files| {
+                                self.materials.files = files;
+                                self.materials.load_assets(prefs)
+                            }) {
+                                Ok(()) => self.fonts_dirty = true,
+                                Err(e) => self.error = e.to_string(),
+                            }
+                        }
+                        if style != self.materials.style {
+                            match prefs.store("appearance", &style) {
+                                Ok(()) => {
+                                    let changed = self.materials.style.font != style.font
+                                        || self.materials.style.texture != style.texture;
+                                    self.materials.style = style;
+                                    if changed {
+                                        if let Err(e) = self.materials.load_assets(prefs) {
+                                            self.error = e.to_string();
+                                        }
+                                        self.fonts_dirty = true;
+                                    }
+                                }
+                                Err(e) => self.error = e.to_string(),
+                            }
+                        }
                         let mut enabled = prefs.flag("true_believer_mode", true);
                         if ui
                             .checkbox(&mut enabled, "True Believer Mode")
@@ -469,7 +516,7 @@ impl BoardWindow {
                 egui::ScrollArea::both()
                     .scroll_source(scroll)
                     .show_viewport(ui, |ui, viewport| {
-                        if let Err(e) = canvas.show(ui, viewport.size()) {
+                        if let Err(e) = canvas.show(ui, viewport.size(), &mut self.materials) {
                             self.error = format!("Board action failed: {e}");
                             ctx.request_repaint();
                         }
@@ -547,7 +594,12 @@ fn strand(a: Pos2, b: Pos2) -> [Pos2; 17] {
 }
 
 impl Canvas {
-    fn show(&mut self, ui: &mut egui::Ui, viewport: Vec2) -> std::io::Result<()> {
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        viewport: Vec2,
+        materials: &mut material::Materials,
+    ) -> std::io::Result<()> {
         if let Ok(error) = self.open_error_rx.try_recv() {
             return Err(error);
         }
@@ -587,6 +639,8 @@ impl Canvas {
             ui.ctx().request_repaint();
             return Ok(());
         }
+        materials.paint(ui, ui.clip_rect(), origin, scale);
+        let style = &materials.style;
         let clip = ui.clip_rect().intersect(canvas);
         for (a, b, visible) in [
             (
@@ -698,17 +752,36 @@ impl Canvas {
                 continue;
             }
             let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-            painter.rect_filled(
-                rect,
-                4.0,
-                if card.missing {
-                    Color32::from_gray(165)
-                } else if card.folder {
-                    Color32::from_rgb(218, 181, 115)
-                } else {
-                    Color32::from_rgb(243, 228, 178)
-                },
-            );
+            let paper = if card.missing {
+                Color32::from_gray(165)
+            } else {
+                style.note(&card.file, card.folder)
+            };
+            let ink = if paper.intensity() < 0.45 {
+                Color32::WHITE
+            } else {
+                Color32::from_gray(32)
+            };
+            if card.folder {
+                let tab = [
+                    rect.min + vec2(0., 8.),
+                    rect.min + vec2(0., 3.),
+                    rect.min + vec2(44., 3.) * scale,
+                    rect.min + vec2(53., 11.) * scale,
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    tab.to_vec(),
+                    paper.gamma_multiply(0.82),
+                    egui::Stroke::NONE,
+                ));
+                painter.rect_filled(
+                    Rect::from_min_max(rect.min + vec2(0., 8.) * scale, rect.max),
+                    4.,
+                    paper,
+                );
+            } else {
+                painter.rect_filled(rect, 4., paper);
+            }
             if rect.contains(ui.input(|i| i.pointer.hover_pos()).unwrap_or(Pos2::ZERO)) {
                 let edit =
                     Rect::from_min_size(rect.right_bottom() - vec2(44.0, 23.0), vec2(42.0, 21.0));
@@ -783,23 +856,19 @@ impl Canvas {
                 } else {
                     card.title.clone().unwrap_or(title)
                 },
-                egui::FontId::new(18.0 * scale, egui::FontFamily::Name("Marker".into())),
-                Color32::from_gray(32),
+                style.title(18.0 * scale),
+                ink,
             );
             let text = painter.layout(
                 body,
-                egui::FontId::proportional(14.0 * scale),
-                Color32::from_gray(45),
+                style.body(14.0 * scale),
+                ink,
                 (CARD_SIZE.x - 20.0) * scale,
             );
             if !card.missing && images::supported(&card.file) {
                 self.images.preview(&self.board, idx, ui, rect);
             }
-            painter.galley(
-                rect.min + vec2(10.0, 47.0) * scale,
-                text,
-                Color32::from_gray(45),
-            );
+            painter.galley(rect.min + vec2(10.0, 47.0) * scale, text, ink);
         }
         if let Some(idx) = remove {
             self.board.remove_card(idx)?;
@@ -883,9 +952,9 @@ impl Canvas {
             }
             self.board.move_card(idx, pos)?;
         }
-        self.show_strings(ui, &rects, origin, scale)?;
+        self.show_strings(ui, &rects, origin, scale, style)?;
         self.spatial
-            .show(&mut self.board, ui, origin, scale, &background)?;
+            .show(&mut self.board, ui, origin, scale, &background, style)?;
         if self.board.cards().len() != rects.len() {
             self.copied = None;
             self.pending_copy = None;
@@ -1041,6 +1110,7 @@ impl Canvas {
         cards: &[Rect],
         origin: Pos2,
         scale: f32,
+        style: &material::Style,
     ) -> std::io::Result<()> {
         let pointer = ui.input(|i| i.pointer.interact_pos());
 
@@ -1098,7 +1168,7 @@ impl Canvas {
             let ink = if selected == Some(target) {
                 egui::Stroke::new(4.5, Color32::from_rgb(248, 99, 64))
             } else {
-                egui::Stroke::new(2.5, spatial::THREADS[color])
+                egui::Stroke::new(2.5, style.thread(color))
             };
             paint_yarn(ui, path, ink);
         }
@@ -1120,7 +1190,7 @@ impl Canvas {
                 paint_yarn(
                     ui,
                     strand(start, p),
-                    egui::Stroke::new(2.5, spatial::THREADS[drag.color]),
+                    egui::Stroke::new(2.5, style.thread(drag.color)),
                 );
                 if released
                     && let Some(target) = cards.iter().rposition(|rect| rect.contains(p))
@@ -1156,13 +1226,7 @@ impl Canvas {
         }
         for rect in cards {
             if ui.is_rect_visible(*rect) {
-                ui.painter()
-                    .circle_filled(tack(*rect), 6.0, Color32::from_rgb(135, 61, 43));
-                ui.painter().circle_filled(
-                    tack(*rect) - vec2(1.0, 1.0),
-                    2.5,
-                    Color32::from_rgb(236, 166, 108),
-                );
+                style.pin(ui.painter(), tack(*rect));
             }
         }
         let id = ui.id().with("cut-string");

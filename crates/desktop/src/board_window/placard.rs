@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn prepared_ink_fits_landscape_and_portrait() {
         let ctx = egui::Context::default();
-        super::super::fonts::install(&ctx);
+        super::super::fonts::install(&ctx, None);
         let _ = ctx.run(Default::default(), |ctx| {
             for viewport in [egui::vec2(1200., 700.), egui::vec2(460., 1000.)] {
                 for phrase in TRUE_BELIEVER_PHRASES {
@@ -345,7 +345,7 @@ mod desktop_tests {
             "corktop",
             options,
             Box::new(move |cc| {
-                super::super::fonts::install(&cc.egui_ctx);
+                super::super::fonts::install(&cc.egui_ctx, None);
                 Ok(Box::new(Probe {
                     placard: Placard {
                         due: Instant::now() + Duration::from_millis(300),

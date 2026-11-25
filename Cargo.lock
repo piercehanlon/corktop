@@ -409,6 +409,7 @@ dependencies = [
  "smithay-client-toolkit 0.19.2",
  "smithay-clipboard",
  "tempfile",
+ "ttf-parser",
  "url",
  "wayland-backend",
  "wayland-client",
